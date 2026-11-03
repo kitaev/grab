@@ -1,0 +1,645 @@
+#!/usr/bin/env python3
+"""grabd: D-Bus service that records application audio streams.
+
+Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Recorder1
+
+  ListItems()            -> a(sa{sv})  items in display order (id, properties)
+  ListInputs()           -> a(ssb)     microphones: (name, description, is_default)
+  Toggle(s id)                          available -> recording -> paused -> recording ...
+  SetInput(s id, s input)               "" none, "default" follow default mic, or source name
+  Dismiss(s id)                         remove a finished item (done / empty / failed)
+  DismissFinished()                     remove all finished items
+  signal ItemsChanged(a(sa{sv}))        full item list after any change
+  signal InputsChanged(a(ssb))          full input list after any change
+
+Item properties: id, title, app, state, busy, stream, input, input_description,
+file, duration, error.
+  state: available | recording | paused | encoding | done | empty | failed
+  busy:  an MP3 snapshot/final encode is queued or running for this item
+
+Recording: a hidden virtual null sink per recording; the app stream (and the
+chosen input) are linked into it alongside their normal routing; one ffmpeg
+writes a lossless FLAC with silence removed. Pause unlinks and saves an MP3
+snapshot; resume relinks and appends. When the stream disappears the item is
+finalized (state encoding -> done/empty/failed) and stays until dismissed.
+Encodes are serialized in one background queue and coalesced per item.
+
+Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
+"""
+import asyncio
+import glob
+import itertools
+import json
+import os
+import re
+import signal
+import time
+
+from dbus_next import BusType, Variant
+from dbus_next.aio import MessageBus
+from dbus_next.service import ServiceInterface, method
+from dbus_next.service import signal as dbus_signal
+
+# ------------------------------------------------------------------ settings
+
+OUTDIR = os.path.expanduser("~/Music/grab")
+AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
+      "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
+MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
+SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
+
+EXCLUDE_APP_RE = ""        # apps never offered (regex on application.name)
+EXCLUDE_ROLE_RE = r"^(event|notification)$"
+GENERIC_RE = r"^(stream|firefox|audiostream|audio stream|playback|audio|output)$"
+
+BUS_NAME = "org.grab.Recorder"
+OBJ_PATH = "/org/grab/Recorder"
+IFACE = "org.grab.Recorder1"
+
+FINISHED = ("done", "empty", "failed")
+ACTIVE = ("recording", "paused")
+
+
+# ------------------------------------------------------------------ helpers
+
+async def run(*cmd):
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    out, _ = await proc.communicate()
+    return proc.returncode, out.decode(errors="ignore")
+
+
+async def pactl_json(kind):
+    rc, out = await run("pactl", "-f", "json", "list", kind)
+    try:
+        return json.loads(out) if rc == 0 else []
+    except ValueError:
+        return []
+
+
+async def duration(path):
+    rc, out = await run("ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "csv=p=0", path)
+    try:
+        return float(out.strip())
+    except ValueError:
+        return 0.0
+
+
+def real_title(t):
+    t = (t or "").strip().lower()
+    return bool(t) and not re.match(GENERIC_RE, t)
+
+
+def fname(t):
+    t = re.sub(r"[/:\\\"'\t\n]", "_", t).strip()
+    return t[:120] or "audio"
+
+
+async def encode_snapshot(flac, mp3):
+    """flac -> mp3, atomically replacing mp3. Returns (ok, saved, seconds)."""
+    if not os.path.exists(flac):
+        return True, False, 0.0
+    tmp = os.path.join(os.path.dirname(mp3), "." + os.path.basename(mp3) + ".tmp.mp3")
+    rc, _ = await run("ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", flac,
+                      "-c:a", "libmp3lame", "-q:a", "0", tmp)
+    if rc != 0:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return False, False, 0.0
+    sec = await duration(tmp)
+    if sec >= MIN_SEC:
+        os.replace(tmp, mp3)
+        return True, True, sec
+    os.remove(tmp)
+    return True, False, sec
+
+
+async def node_ports():
+    """{node_id: {"output": [(channel, port_id)], "input": [...]}} from pw-dump."""
+    rc, out = await run("pw-dump")
+    try:
+        objs = json.loads(out)
+    except ValueError:
+        return {}
+    nodes = {}
+    for o in objs:
+        if o.get("type") != "PipeWire:Interface:Port":
+            continue
+        info = o.get("info", {})
+        props = info.get("props", {})
+        if props.get("port.monitor") in (True, "true"):
+            continue
+        node = str(props.get("node.id"))
+        nodes.setdefault(node, {"output": [], "input": []})
+        d = info.get("direction")
+        if d in ("output", "input"):
+            nodes[node][d].append((props.get("audio.channel"), o["id"]))
+    return nodes
+
+
+def pair_ports(outs, ins):
+    """Match by channel; mono -> every input; otherwise by position."""
+    by_ch = {ch: pid for ch, pid in ins}
+    pairs = [(pid, by_ch[ch]) for ch, pid in outs if ch in by_ch]
+    if pairs:
+        return pairs
+    if len(outs) == 1:
+        return [(outs[0][1], pid) for _ch, pid in ins]
+    return [(o[1], i[1]) for o, i in zip(outs, ins)]
+
+
+# ------------------------------------------------------------------ model
+
+class Stream:
+    def __init__(self, si):
+        p = si.get("properties", {})
+        self.idx = si["index"]
+        self.node = str(p.get("object.id"))
+        self.media = p.get("media.name", "")
+        self.app = p.get("application.name", "Audio")
+        self.corked = si.get("corked", False)
+        self.channel_map = si.get("channel_map") or "front-left,front-right"
+
+    @property
+    def title(self):
+        return self.media.strip() if real_title(self.media) else self.app
+
+    @property
+    def offerable(self):
+        return not self.corked or real_title(self.media)
+
+    @staticmethod
+    def accept(si):
+        p = si.get("properties", {})
+        if p.get("node.link-group"):
+            return False
+        if re.match(EXCLUDE_ROLE_RE, p.get("media.role", ""), re.I):
+            return False
+        if EXCLUDE_APP_RE and re.search(EXCLUDE_APP_RE, p.get("application.name", ""), re.I):
+            return False
+        return True
+
+
+class Item:
+    ids = itertools.count(1)
+
+    def __init__(self, stream=None, title="", app=""):
+        self.id = str(next(Item.ids))
+        self.stream = stream
+        self.title = stream.title if stream else title
+        self.app = stream.app if stream else app
+        self.state = "available"
+        self.busy = False
+        self.input = ""                    # "" none, "default", or source name
+        self.file = ""
+        self.duration = 0.0
+        self.error = ""
+        # recording internals
+        self.sink = ""
+        self.sink_node = None
+        self.module = None
+        self.proc = None
+        self.flac = ""
+        self.mp3 = ""
+        self.stream_links = []
+        self.input_links = []
+        self.op = asyncio.Lock()
+
+    def props(self, input_desc):
+        return {
+            "id": Variant("s", self.id),
+            "title": Variant("s", self.title),
+            "app": Variant("s", self.app),
+            "state": Variant("s", self.state),
+            "busy": Variant("b", self.busy),
+            "stream": Variant("b", self.stream is not None),
+            "input": Variant("s", self.input),
+            "input_description": Variant("s", input_desc),
+            "file": Variant("s", self.file),
+            "duration": Variant("d", float(self.duration)),
+            "error": Variant("s", self.error),
+        }
+
+
+# ------------------------------------------------------------------ encoding queue
+
+class EncodeQueue:
+    """One worker for all items; requests are coalesced per item."""
+
+    def __init__(self, on_done):
+        self.pending = {}                  # item -> final? (insertion ordered)
+        self.current = None
+        self.wake = asyncio.Event()
+        self.idle = asyncio.Event()
+        self.idle.set()
+        self.on_done = on_done
+
+    def request(self, item, final=False):
+        self.pending[item] = self.pending.get(item, False) or final
+        item.busy = True
+        self.idle.clear()
+        self.wake.set()
+
+    async def drain(self):
+        await self.idle.wait()
+
+    async def worker(self):
+        while True:
+            await self.wake.wait()
+            self.wake.clear()
+            while self.pending:
+                item, final = next(iter(self.pending.items()))
+                del self.pending[item]
+                self.current = item
+                ok, saved, sec = await encode_snapshot(item.flac, item.mp3)
+                self.current = None
+                item.busy = item in self.pending
+                await self.on_done(item, final, ok, saved, sec)
+            self.idle.set()
+
+
+# ------------------------------------------------------------------ the recorder
+
+class Recorder:
+    def __init__(self):
+        self.items = {}                    # id -> Item, display order
+        self.by_stream = {}                # sink-input index -> Item
+        self.sources = []                  # [(name, description, node)]
+        self.default_source = ""
+        self.counter = itertools.count(1)
+        self.iface = None
+        self.queue = EncodeQueue(self.encoded)
+        self.stopping = False
+        self._emit = None
+
+    # ---- change notification (coalesced)
+
+    def changed(self):
+        if self.iface and not self._emit:
+            loop = asyncio.get_running_loop()
+            self._emit = loop.call_later(0.05, self._do_emit)
+
+    def _do_emit(self):
+        self._emit = None
+        self.iface.ItemsChanged()
+
+    def item_list(self):
+        return [[i.id, i.props(self.input_description(i.input))] for i in self.items.values()]
+
+    def input_list(self):
+        return [[n, d, n == self.default_source] for n, d, _node in self.sources]
+
+    def input_description(self, inp):
+        if inp == "default":
+            desc = next((d for n, d, _ in self.sources if n == self.default_source), "")
+            return f"Default ({desc})" if desc else "Default"
+        if inp:
+            return next((d for n, d, _ in self.sources if n == inp), inp)
+        return "None"
+
+    # ---- streams
+
+    async def refresh_streams(self):
+        if self.stopping:
+            return
+        streams = {si["index"]: Stream(si)
+                   for si in await pactl_json("sink-inputs") if Stream.accept(si)}
+
+        for idx, item in list(self.by_stream.items()):
+            s = streams.get(idx)
+            if s is None or (item.state == "available" and not s.offerable):
+                del self.by_stream[idx]
+                item.stream = None
+                if item.state == "available":
+                    self.items.pop(item.id, None)
+                elif item.state in ACTIVE:
+                    asyncio.get_running_loop().create_task(self.finalize(item))
+            else:
+                item.stream = s
+                if item.state == "available" or real_title(s.media):
+                    item.title, item.app = s.title, s.app
+
+        for idx, s in streams.items():
+            if idx not in self.by_stream and s.offerable:
+                item = Item(s)
+                self.items[item.id] = item
+                self.by_stream[idx] = item
+        self.changed()
+
+    # ---- inputs
+
+    async def refresh_inputs(self):
+        rc, out = await run("pactl", "get-default-source")
+        default = out.strip()
+        sources = []
+        for src in await pactl_json("sources"):
+            p = src.get("properties", {})
+            name = src.get("name", "")
+            if name.endswith(".monitor") or p.get("device.class") == "monitor":
+                continue
+            sources.append((name, src.get("description") or name, str(p.get("object.id"))))
+        default_changed = default != self.default_source
+        if sources != self.sources or default_changed:
+            self.sources, self.default_source = sources, default
+            if self.iface:
+                self.iface.InputsChanged()
+            if default_changed:
+                for item in self.items.values():
+                    if item.input == "default" and item.state == "recording":
+                        async with item.op:
+                            await self._unlink(item.input_links)
+                            item.input_links = await self._link_input(item)
+            self.changed()
+
+    def _source_node(self, inp):
+        name = self.default_source if inp == "default" else inp
+        return next((node for n, _d, node in self.sources if n == name), None)
+
+    # ---- PipeWire plumbing
+
+    async def _sink_node(self, item):
+        for _ in range(25):
+            for s in await pactl_json("sinks"):
+                if s.get("name") == item.sink:
+                    return str(s.get("properties", {}).get("object.id"))
+            await asyncio.sleep(0.2)
+        return None
+
+    async def _link(self, src, dst):
+        for _ in range(25):
+            ports = await node_ports()
+            outs = ports.get(src, {}).get("output", [])
+            ins = ports.get(dst, {}).get("input", [])
+            if outs and ins:
+                pairs = pair_ports(outs, ins)
+                for o, i in pairs:
+                    await run("pw-link", str(o), str(i))
+                return pairs
+            await asyncio.sleep(0.2)
+        return []
+
+    async def _unlink(self, pairs):
+        for o, i in pairs:
+            await run("pw-link", "-d", str(o), str(i))
+        pairs.clear()
+
+    async def _link_input(self, item):
+        if not item.input:
+            return []
+        src = self._source_node(item.input)
+        return await self._link(src, item.sink_node) if src else []
+
+    # ---- actions
+
+    async def toggle(self, item):
+        async with item.op:
+            if item.state == "available" and item.stream:
+                await self._start(item)
+            elif item.state == "recording":
+                await self._unlink(item.stream_links)
+                await self._unlink(item.input_links)
+                item.state = "paused"
+                self.changed()
+                asyncio.get_running_loop().call_later(
+                    SAVE_DELAY, lambda: (self.queue.request(item), self.changed()))
+            elif item.state == "paused" and item.stream:
+                item.stream_links = await self._link(item.stream.node, item.sink_node)
+                item.input_links = await self._link_input(item)
+                item.state = "recording"
+                self.changed()
+
+    async def _start(self, item):
+        s = item.stream
+        item.error = ""
+        item.sink = f"grab_{s.idx}_{next(self.counter)}"
+        base = f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{fname(item.title)}"
+        item.flac = os.path.join(OUTDIR, f".{base}.flac")
+        item.mp3 = os.path.join(OUTDIR, f"{base}.mp3")
+        ch = len(s.channel_map.split(","))
+        rc, out = await run(
+            "pactl", "load-module", "module-null-sink",
+            f"sink_name={item.sink}", f"channels={ch}", f"channel_map={s.channel_map}",
+            "sink_properties='node.virtual=true device.description=\"Grab\" "
+            "device.icon_name=\"media-record\"'")
+        if rc != 0:
+            item.error = "could not create sink"
+            self.changed()
+            return
+        item.module = out.strip()
+        item.sink_node = await self._sink_node(item)
+        item.proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-nostdin", "-loglevel", "error",
+            "-f", "pulse", "-i", f"{item.sink}.monitor",
+            "-af", AF, "-c:a", "flac", "-flush_packets", "1", item.flac,
+            stdin=asyncio.subprocess.DEVNULL)
+        item.stream_links = await self._link(s.node, item.sink_node) if item.sink_node else []
+        if not item.stream_links:
+            item.error = "could not connect to the stream"
+            await self._teardown(item)
+            if os.path.exists(item.flac):
+                os.remove(item.flac)
+            item.flac = item.mp3 = ""
+            self.changed()
+            return
+        item.input_links = await self._link_input(item)
+        item.state = "recording"
+        self.changed()
+
+    async def set_input(self, item, inp):
+        async with item.op:
+            item.input = inp
+            if item.state == "recording":
+                await self._unlink(item.input_links)
+                item.input_links = await self._link_input(item)
+            self.changed()
+
+    async def _teardown(self, item):
+        await self._unlink(item.stream_links)
+        await self._unlink(item.input_links)
+        if item.proc and item.proc.returncode is None:
+            item.proc.send_signal(signal.SIGINT)          # ffmpeg finalizes the FLAC
+            try:
+                await asyncio.wait_for(item.proc.wait(), 15)
+            except asyncio.TimeoutError:
+                item.proc.kill()
+        if item.module:
+            await run("pactl", "unload-module", item.module)
+            item.module = None
+
+    async def finalize(self, item):
+        async with item.op:
+            if item.state not in ACTIVE:
+                return
+            item.state = "encoding"
+            self.changed()
+            await self._teardown(item)
+            self.queue.request(item, final=True)
+            self.changed()
+
+    def dismiss(self, item):
+        if item.state in FINISHED:
+            self.items.pop(item.id, None)
+            self.changed()
+
+    # ---- encode results
+
+    async def encoded(self, item, final, ok, saved, sec):
+        if saved:
+            item.file, item.duration = item.mp3, sec
+        if not ok:
+            item.error = "encoding failed; FLAC kept"
+        if final:
+            if ok and os.path.exists(item.flac):
+                os.remove(item.flac)
+            item.state = "failed" if not ok else ("done" if item.file else "empty")
+        self.changed()
+
+    # ---- startup / shutdown
+
+    async def cleanup_leftovers(self):
+        rc, out = await run("pactl", "list", "short", "modules")
+        for line in out.splitlines():
+            if "module-null-sink" in line and re.search(r"sink_name=grab_\d", line):
+                await run("pactl", "unload-module", line.split()[0])
+
+    def recover_orphans(self):
+        for flac in sorted(glob.glob(os.path.join(OUTDIR, ".*.flac"))):
+            base = os.path.basename(flac)[1:-5]
+            title = base.split("_", 2)[2] if base.count("_") >= 2 else base
+            item = Item(title=title, app="recovered")
+            item.flac, item.mp3 = flac, os.path.join(OUTDIR, base + ".mp3")
+            item.state = "encoding"
+            self.items[item.id] = item
+            self.queue.request(item, final=True)
+
+    async def shutdown(self):
+        if self.stopping:
+            return
+        self.stopping = True
+        await asyncio.gather(*(self.finalize(i) for i in list(self.items.values())
+                               if i.state in ACTIVE), return_exceptions=True)
+        await self.queue.drain()
+
+
+# ------------------------------------------------------------------ D-Bus interface
+
+class RecorderInterface(ServiceInterface):
+    def __init__(self, rec):
+        super().__init__(IFACE)
+        self.rec = rec
+
+    def _item(self, item_id):
+        return self.rec.items.get(item_id)
+
+    def _spawn(self, coro):
+        asyncio.get_running_loop().create_task(coro)
+
+    @method()
+    def ListItems(self) -> "a(sa{sv})":
+        return self.rec.item_list()
+
+    @method()
+    def ListInputs(self) -> "a(ssb)":
+        return self.rec.input_list()
+
+    @method()
+    def Toggle(self, item_id: "s"):
+        item = self._item(item_id)
+        if item:
+            self._spawn(self.rec.toggle(item))
+
+    @method()
+    def SetInput(self, item_id: "s", input_name: "s"):
+        item = self._item(item_id)
+        if item and item.state not in FINISHED and item.state != "encoding":
+            self._spawn(self.rec.set_input(item, input_name))
+
+    @method()
+    def Dismiss(self, item_id: "s"):
+        item = self._item(item_id)
+        if item:
+            self.rec.dismiss(item)
+
+    @method()
+    def DismissFinished(self):
+        for item in list(self.rec.items.values()):
+            self.rec.dismiss(item)
+
+    @dbus_signal()
+    def ItemsChanged(self) -> "a(sa{sv})":
+        return self.rec.item_list()
+
+    @dbus_signal()
+    def InputsChanged(self) -> "a(ssb)":
+        return self.rec.input_list()
+
+
+# ------------------------------------------------------------------ main
+
+async def subscribe(rec):
+    loop = asyncio.get_running_loop()
+    timers = {}
+
+    def later(key, coro_fn):
+        if key in timers:
+            timers[key].cancel()
+        timers[key] = loop.call_later(0.15, lambda: loop.create_task(coro_fn()))
+
+    while True:
+        proc = await asyncio.create_subprocess_exec(
+            "pactl", "subscribe", stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL)
+        try:
+            async for raw in proc.stdout:
+                if b"on sink-input #" in raw:
+                    later("streams", rec.refresh_streams)
+                elif b"on source #" in raw or b"on server" in raw:
+                    later("inputs", rec.refresh_inputs)
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+        await asyncio.sleep(2)              # pactl ended (e.g. PipeWire restart)
+        await rec.refresh_inputs()
+        await rec.refresh_streams()
+
+
+async def main():
+    os.makedirs(OUTDIR, exist_ok=True)
+    rec = Recorder()
+    loop = asyncio.get_running_loop()
+    worker = loop.create_task(rec.queue.worker())
+
+    await rec.cleanup_leftovers()
+    bus = await MessageBus(bus_type=BusType.SESSION).connect()
+    rec.iface = RecorderInterface(rec)
+    bus.export(OBJ_PATH, rec.iface)
+    await bus.request_name(BUS_NAME)
+
+    rec.recover_orphans()
+    await rec.refresh_inputs()
+    await rec.refresh_streams()
+
+    stop = asyncio.Event()
+
+    async def on_signal():
+        await rec.shutdown()
+        stop.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: loop.create_task(on_signal()))
+
+    sub = loop.create_task(subscribe(rec))
+    await stop.wait()
+    for t in (sub, worker):
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
+    bus.disconnect()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

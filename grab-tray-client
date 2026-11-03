@@ -1,0 +1,527 @@
+#!/usr/bin/env python3
+"""grab-tray: tray UI for the grabd recording service.
+
+Shows grabd's items (recordable streams, recordings, finished files) in a
+tray menu that opens on left and right click (StatusNotifierItem with
+ItemIsMenu, works on Wayland). Per item: Record / Pause / Resume, the
+microphone input mixed into the recording, and for finished items Open,
+Show in folder, Dismiss. Reports Status for KDE's "Shown when relevant".
+
+Requires: python-dbus-next; the grabd service.
+"""
+import asyncio
+import os
+import signal
+import textwrap
+
+from dbus_next import BusType, Variant
+from dbus_next.aio import MessageBus
+from dbus_next.service import PropertyAccess, ServiceInterface, dbus_property, method
+from dbus_next.service import signal as dbus_signal
+
+OUTDIR = os.path.expanduser("~/Music/grab")
+LINE_WIDTH = 50
+COLOR_IDLE = (0x8a, 0x8a, 0x8a)
+COLOR_REC = (0xda, 0x44, 0x53)
+ICON_SIZES = (16, 22, 24, 32, 48, 64)
+
+SVC_NAME = "org.grab.Recorder"
+SVC_PATH = "/org/grab/Recorder"
+SVC_IFACE = "org.grab.Recorder1"
+
+SNI_PATH = "/StatusNotifierItem"
+MENU_PATH = "/MenuBar"
+WATCHER = "org.kde.StatusNotifierWatcher"
+
+STATE_ICON = {
+    "available": "media-record",
+    "recording": "media-record",
+    "paused": "media-playback-pause",
+    "encoding": "document-save",
+    "done": "audio-x-generic",
+    "empty": "dialog-information",
+    "failed": "dialog-error",
+}
+
+
+# ------------------------------------------------------------------ helpers
+
+def wrap2(text, width=LINE_WIDTH):
+    lines = textwrap.wrap(text, width) or [""]
+    if len(lines) <= 2:
+        return "\n".join(lines)
+    rest = " ".join(lines[1:])
+    return lines[0] + "\n" + rest[:width - 1].rstrip() + "…"
+
+
+def mmss(sec):
+    sec = int(sec)
+    return f"{sec // 3600}:{sec // 60 % 60:02d}:{sec % 60:02d}" if sec >= 3600 \
+        else f"{sec // 60}:{sec % 60:02d}"
+
+
+def unwrap(d):
+    return {k: (v.value if isinstance(v, Variant) else v) for k, v in d.items()}
+
+
+def dot_pixmaps(rgb):
+    r, g, b = rgb
+    result = []
+    for size in ICON_SIZES:
+        c, radius = (size - 1) / 2, size * 0.38
+        data = bytearray()
+        for y in range(size):
+            for x in range(size):
+                d = ((x - c) ** 2 + (y - c) ** 2) ** 0.5
+                a = max(0.0, min(1.0, radius - d + 0.5))
+                data += bytes((int(a * 255), r, g, b))
+        result.append([size, size, bytes(data)])
+    return result
+
+
+PIX_IDLE = dot_pixmaps(COLOR_IDLE)
+PIX_REC = dot_pixmaps(COLOR_REC)
+
+
+# ------------------------------------------------------------------ tray item
+
+class StatusNotifierItem(ServiceInterface):
+    def __init__(self):
+        super().__init__("org.kde.StatusNotifierItem")
+        self.status = "Passive"
+        self.recording = False
+        self.tooltip = ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Category(self) -> "s":
+        return "ApplicationStatus"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Id(self) -> "s":
+        return "grab"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Title(self) -> "s":
+        return "Grab"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Status(self) -> "s":
+        return self.status
+
+    @dbus_property(access=PropertyAccess.READ)
+    def WindowId(self) -> "i":
+        return 0
+
+    @dbus_property(access=PropertyAccess.READ)
+    def IconThemePath(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def IconName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def IconPixmap(self) -> "a(iiay)":
+        return PIX_REC if self.recording else PIX_IDLE
+
+    @dbus_property(access=PropertyAccess.READ)
+    def OverlayIconName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def OverlayIconPixmap(self) -> "a(iiay)":
+        return []
+
+    @dbus_property(access=PropertyAccess.READ)
+    def AttentionIconName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def AttentionIconPixmap(self) -> "a(iiay)":
+        return PIX_REC
+
+    @dbus_property(access=PropertyAccess.READ)
+    def AttentionMovieName(self) -> "s":
+        return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def ToolTip(self) -> "(sa(iiay)ss)":
+        return ["", PIX_REC if self.recording else PIX_IDLE, "Grab", self.tooltip]
+
+    @dbus_property(access=PropertyAccess.READ)
+    def ItemIsMenu(self) -> "b":
+        return True
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Menu(self) -> "o":
+        return MENU_PATH
+
+    @method()
+    def ContextMenu(self, x: "i", y: "i"):
+        pass
+
+    @method()
+    def Activate(self, x: "i", y: "i"):
+        pass
+
+    @method()
+    def SecondaryActivate(self, x: "i", y: "i"):
+        pass
+
+    @method()
+    def Scroll(self, delta: "i", orientation: "s"):
+        pass
+
+    @dbus_signal()
+    def NewIcon(self):
+        pass
+
+    @dbus_signal()
+    def NewAttentionIcon(self):
+        pass
+
+    @dbus_signal()
+    def NewToolTip(self):
+        pass
+
+    @dbus_signal()
+    def NewStatus(self) -> "s":
+        return self.status
+
+    def update(self, status, recording, tooltip):
+        if recording != self.recording:
+            self.recording = recording
+            self.NewIcon()
+        if tooltip != self.tooltip:
+            self.tooltip = tooltip
+            self.NewToolTip()
+        if status != self.status:
+            self.status = status
+            self.NewStatus()
+
+
+# ------------------------------------------------------------------ menu
+
+class DBusMenu(ServiceInterface):
+    """Menu tree. Entry keys: label, icon, enabled, separator, radio (bool
+    checked), action (coroutine fn), children (list)."""
+
+    def __init__(self):
+        super().__init__("com.canonical.dbusmenu")
+        self.revision = 1
+        self.nodes = {0: ({"children-display": Variant("s", "submenu")}, [])}
+        self.actions = {}
+
+    def set_items(self, entries):
+        self.nodes, self.actions = {}, {}
+        counter = [0]
+
+        def add(entry_list):
+            ids = []
+            for e in entry_list:
+                counter[0] += 1
+                i = counter[0]
+                props, kids = {}, []
+                if e.get("separator"):
+                    props["type"] = Variant("s", "separator")
+                else:
+                    props["label"] = Variant("s", e["label"].replace("_", "__"))
+                    if e.get("icon"):
+                        props["icon-name"] = Variant("s", e["icon"])
+                    props["enabled"] = Variant("b", e.get("enabled", True))
+                    if "radio" in e:
+                        props["toggle-type"] = Variant("s", "radio")
+                        props["toggle-state"] = Variant("i", 1 if e["radio"] else 0)
+                    kids = add(e.get("children", []))
+                    if kids:
+                        props["children-display"] = Variant("s", "submenu")
+                    if e.get("action"):
+                        self.actions[i] = e["action"]
+                self.nodes[i] = (props, kids)
+                ids.append(i)
+            return ids
+
+        self.nodes[0] = ({"children-display": Variant("s", "submenu")}, add(entries))
+        self.revision += 1
+        self.LayoutUpdated()
+
+    def _build(self, item_id, depth, names):
+        props, kids = self.nodes[item_id]
+        if names:
+            props = {k: v for k, v in props.items() if k in names}
+        children = [Variant("(ia{sv}av)", self._build(k, depth - 1, names))
+                    for k in kids] if depth != 0 else []
+        return [item_id, props, children]
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Version(self) -> "u":
+        return 3
+
+    @dbus_property(access=PropertyAccess.READ)
+    def TextDirection(self) -> "s":
+        return "ltr"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Status(self) -> "s":
+        return "normal"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def IconThemePath(self) -> "as":
+        return []
+
+    @method()
+    def GetLayout(self, parent_id: "i", recursion_depth: "i",
+                  property_names: "as") -> "u(ia{sv}av)":
+        if parent_id not in self.nodes:
+            return [self.revision, [parent_id, {}, []]]
+        return [self.revision, self._build(parent_id, recursion_depth, property_names)]
+
+    @method()
+    def GetGroupProperties(self, ids: "ai", property_names: "as") -> "a(ia{sv})":
+        result = []
+        for i, (props, _kids) in self.nodes.items():
+            if i != 0 and (not ids or i in ids):
+                if property_names:
+                    props = {k: v for k, v in props.items() if k in property_names}
+                result.append([i, props])
+        return result
+
+    @method()
+    def GetProperty(self, item_id: "i", name: "s") -> "v":
+        return self.nodes.get(item_id, ({}, []))[0].get(name, Variant("s", ""))
+
+    @method()
+    def Event(self, item_id: "i", event_id: "s", data: "v", timestamp: "u"):
+        self._handle(item_id, event_id)
+
+    @method()
+    def EventGroup(self, events: "a(isvu)") -> "ai":
+        for item_id, event_id, _data, _ts in events:
+            self._handle(item_id, event_id)
+        return []
+
+    @method()
+    def AboutToShow(self, item_id: "i") -> "b":
+        return False
+
+    @method()
+    def AboutToShowGroup(self, ids: "ai") -> "aiai":
+        return [[], []]
+
+    @dbus_signal()
+    def LayoutUpdated(self) -> "ui":
+        return [self.revision, 0]
+
+    @dbus_signal()
+    def ItemsPropertiesUpdated(self) -> "a(ia{sv})a(ias)":
+        return [[], []]
+
+    def _handle(self, item_id, event_id):
+        if event_id == "clicked" and item_id in self.actions:
+            asyncio.get_running_loop().create_task(self.actions[item_id]())
+
+
+# ------------------------------------------------------------------ the tray
+
+class Tray:
+    def __init__(self):
+        self.bus = None
+        self.sni = StatusNotifierItem()
+        self.menu = DBusMenu()
+        self.name = f"org.kde.StatusNotifierItem-{os.getpid()}-1"
+        self.svc = None                    # proxy interface to grabd
+        self.items = []                    # [dict]
+        self.inputs = []                   # [(name, desc, is_default)]
+        self.stop = asyncio.Event()
+
+    async def start(self):
+        self.bus = await MessageBus(bus_type=BusType.SESSION).connect()
+        self.bus.export(SNI_PATH, self.sni)
+        self.bus.export(MENU_PATH, self.menu)
+        await self.bus.request_name(self.name)
+
+        intro = await self.bus.introspect("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        dbus = self.bus.get_proxy_object("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                         intro).get_interface("org.freedesktop.DBus")
+        dbus.on_name_owner_changed(self.name_changed)
+
+        await self.register()
+        await self.connect_service()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, self.stop.set)
+        await self.stop.wait()
+        self.bus.disconnect()
+
+    def name_changed(self, name, old, new):
+        loop = asyncio.get_running_loop()
+        if name == WATCHER and new:
+            loop.create_task(self.register())
+        elif name == SVC_NAME:
+            if new:
+                loop.create_task(self.connect_service())
+            else:
+                self.svc, self.items, self.inputs = None, [], []
+                self.render()
+
+    async def register(self):
+        try:
+            intro = await self.bus.introspect(WATCHER, "/StatusNotifierWatcher")
+            obj = self.bus.get_proxy_object(WATCHER, "/StatusNotifierWatcher", intro)
+            await obj.get_interface(WATCHER).call_register_status_notifier_item(self.name)
+        except Exception as e:
+            print(f"grab-tray: tray host not available yet ({e})", flush=True)
+
+    async def connect_service(self):
+        try:
+            intro = await self.bus.introspect(SVC_NAME, SVC_PATH)
+            svc = self.bus.get_proxy_object(SVC_NAME, SVC_PATH, intro).get_interface(SVC_IFACE)
+            svc.on_items_changed(self.on_items)
+            svc.on_inputs_changed(self.on_inputs)
+            self.svc = svc
+            self.on_inputs(await svc.call_list_inputs())
+            self.on_items(await svc.call_list_items())
+        except Exception as e:
+            print(f"grab-tray: recorder service not available ({e})", flush=True)
+            self.svc = None
+            self.render()
+
+    def on_items(self, items):
+        self.items = [unwrap(props) for _id, props in items]
+        self.render()
+
+    def on_inputs(self, inputs):
+        self.inputs = [tuple(i) for i in inputs]
+        self.render()
+
+    # ---- actions
+
+    def call(self, fn, *args):
+        async def run():
+            try:
+                await fn(*args)
+            except Exception as e:
+                print(f"grab-tray: call failed ({e})", flush=True)
+        return run
+
+    async def open_path(self, path):
+        await asyncio.create_subprocess_exec("xdg-open", path)
+
+    async def show_in_folder(self, path):
+        try:
+            intro = await self.bus.introspect("org.freedesktop.FileManager1",
+                                              "/org/freedesktop/FileManager1")
+            fm = self.bus.get_proxy_object("org.freedesktop.FileManager1",
+                                           "/org/freedesktop/FileManager1", intro)
+            await fm.get_interface("org.freedesktop.FileManager1").call_show_items(
+                ["file://" + path], "")
+        except Exception:
+            await self.open_path(os.path.dirname(path))
+
+    async def quit(self):
+        self.stop.set()
+
+    # ---- rendering
+
+    def state_text(self, it):
+        st, dur = it["state"], it.get("duration", 0)
+        saving = " · saving…" if it.get("busy") else ""
+        text = {
+            "available": "Ready to record",
+            "recording": "Recording",
+            "paused": f"Paused · saved {mmss(dur)}" if it.get("file") else "Paused",
+            "encoding": "Encoding…",
+            "done": f"Saved · {mmss(dur)}",
+            "empty": "Nothing recorded",
+            "failed": f"Failed: {it.get('error') or 'unknown error'}",
+        }.get(st, st)
+        return text + (saving if st in ("recording", "paused") else "")
+
+    def input_menu(self, it):
+        cur = it.get("input", "")
+        default_desc = next((d for n, d, is_def in self.inputs if is_def), "")
+        entries = [
+            {"label": "None", "radio": cur == "",
+             "action": self.call(self.svc.call_set_input, it["id"], "")},
+            {"label": f"Default ({default_desc})" if default_desc else "Default",
+             "radio": cur == "default",
+             "action": self.call(self.svc.call_set_input, it["id"], "default")},
+        ]
+        if self.inputs:
+            entries.append({"separator": True})
+        for name, desc, _is_def in self.inputs:
+            entries.append({"label": desc, "radio": cur == name,
+                            "action": self.call(self.svc.call_set_input, it["id"], name)})
+        return entries
+
+    def item_entry(self, it):
+        st = it["state"]
+        children = [{"label": self.state_text(it), "enabled": False}]
+
+        if st in ("available", "recording", "paused"):
+            verb, icon = {"available": ("Record", "media-record"),
+                          "recording": ("Pause", "media-playback-pause"),
+                          "paused": ("Resume", "media-record")}[st]
+            enabled = it.get("stream", True)
+            children.append({"label": verb, "icon": icon, "enabled": enabled,
+                             "action": self.call(self.svc.call_toggle, it["id"])})
+            children.append({"label": f"Microphone: {it.get('input_description', 'None')}",
+                             "icon": "audio-input-microphone",
+                             "children": self.input_menu(it)})
+
+        if it.get("file") and os.path.exists(it["file"]):
+            children.append({"separator": True})
+            children.append({"label": "Open", "icon": "media-playback-start",
+                             "action": (lambda p=it["file"]: self.open_path(p))})
+            children.append({"label": "Show in folder", "icon": "folder-open",
+                             "action": (lambda p=it["file"]: self.show_in_folder(p))})
+
+        if st in ("done", "empty", "failed"):
+            children.append({"label": "Dismiss", "icon": "edit-clear",
+                             "action": self.call(self.svc.call_dismiss, it["id"])})
+
+        prefix = {"recording": "● ", "paused": "❚❚ ", "encoding": "… "}.get(st, "")
+        return {"label": wrap2(prefix + it["title"]), "icon": STATE_ICON.get(st, ""),
+                "children": children}
+
+    def render(self):
+        entries = []
+        if self.svc is None:
+            entries.append({"label": "Recorder service not running", "enabled": False})
+        elif not self.items:
+            entries.append({"label": "No recordable streams", "enabled": False})
+        else:
+            live = [i for i in self.items if i["state"] not in ("done", "empty", "failed")]
+            finished = [i for i in self.items if i["state"] in ("done", "empty", "failed")]
+            entries += [self.item_entry(i) for i in live]
+            if finished:
+                if live:
+                    entries.append({"separator": True})
+                entries += [self.item_entry(i) for i in finished]
+                entries.append({"label": "Dismiss all finished", "icon": "edit-clear-all",
+                                "action": self.call(self.svc.call_dismiss_finished)})
+        entries.append({"separator": True})
+        entries.append({"label": "Open recordings folder", "icon": "folder-music",
+                        "action": (lambda: self.open_path(OUTDIR))})
+        entries.append({"label": "Quit tray", "icon": "application-exit",
+                        "action": self.quit})
+        self.menu.set_items(entries)
+
+        recording = [i for i in self.items if i["state"] == "recording"]
+        if self.svc is None:
+            status, tip = "Active", "Recorder service not running"
+        elif recording:
+            status = "NeedsAttention"
+            tip = "Recording:\n" + "\n".join(i["title"] for i in recording)
+        elif self.items:
+            status = "Active"
+            busy = sum(1 for i in self.items if i["state"] == "encoding" or i.get("busy"))
+            tip = f"{len(self.items)} item(s)" + (f", {busy} encoding" if busy else "")
+        else:
+            status, tip = "Passive", "No streams"
+        self.sni.update(status, bool(recording), tip)
+
+
+if __name__ == "__main__":
+    asyncio.run(Tray().start())
