@@ -86,7 +86,8 @@ FLAC): title, date (start time), and grab=1 (the marker), grab_app,
 grab_input. MP3s in the recordings folder that carry the marker and belong to
 no item (earlier sessions) are listed as done items; others are not listed.
 Removing a finished item strips the marker (a lossless copy of the MP3) and
-keeps the MP3; removing it with data moves the MP3 and any leftover FLAC to
+keeps the MP3 (and renames a failed one's FLAC to a visible
+"<name>.flac"); removing it with data moves the MP3 and any leftover FLAC to
 the Trash (restoring them brings the item back); Delete() deletes them. Items disappear when their
 MP3 is deleted or loses the marker.
 
@@ -305,7 +306,8 @@ async def tag_info(path):
     """probe() via mutagen when installed, else ffprobe."""
     if mutagen:
         try:
-            return probe_mutagen(path)
+            # in a thread: a folder with thousands of MP3s must not stall grabd
+            return await asyncio.to_thread(probe_mutagen, path)
         except Exception:
             pass
     return await probe(path)
@@ -560,9 +562,12 @@ class Stream:
 
 class Item:
     ids = itertools.count(1)
+    # ids differ between grabd runs: a client holding an id from before a
+    # restart (e.g. an open "Delete File?" dialog) must not hit another item
+    run = os.urandom(4).hex()
 
     def __init__(self, stream=None, title="", app=""):
-        self.id = str(next(Item.ids))
+        self.id = f"{Item.run}-{next(Item.ids)}"
         self.stream = stream
         self.title = stream.title if stream else title
         self.app = stream.app if stream else app
@@ -956,14 +961,15 @@ class Recorder:
 
         for idx, item in list(self.by_stream.items()):
             s = streams.get(idx)
-            if s is None or (item.state == "available" and not s.offerable and not item.muted):
+            if s is None or (item.state == "available" and not s.offerable
+                             and not item.muted and not item.pending):
                 del self.by_stream[idx]
                 item.stream = None
                 if item.muted:             # gone while muted: nothing to restore
                     item.muted, item.silent_links, item.playback_node = False, [], None
                     asyncio.get_running_loop().create_task(self._drop_silent_sink())
-                if item.state == "available":
-                    self.items.pop(item.id, None)
+                if item.state == "available" and not item.pending:
+                    self.items.pop(item.id, None)  # (starting: toggle() decides)
                 elif item.state in ACTIVE:
                     asyncio.get_running_loop().create_task(self.finalize(item))
             else:
@@ -1142,6 +1148,13 @@ class Recorder:
                     self.changed()
         finally:
             item.pending = False
+            # the stream went away meanwhile (e.g. while the recording started):
+            # end what was started, or drop the entry
+            if item.stream is None and self.items.get(item.id) is item:
+                if item.state in ACTIVE:
+                    asyncio.get_running_loop().create_task(self.finalize(item))
+                elif item.state == "available":
+                    self.items.pop(item.id, None)
             self.changed()
 
     async def _start(self, item):
@@ -1244,9 +1257,9 @@ class Recorder:
             self.changed()
 
     async def _teardown(self, item):
+        item.proc_stopping = True          # first: ffmpeg exiting from here on is us
         await self._unlink(item.stream_links)
         await self._unlink_input(item)
-        item.proc_stopping = True
         if item.proc and item.proc.returncode is None:
             item.proc.send_signal(signal.SIGINT)          # ffmpeg finalizes the FLAC
             try:
@@ -1279,12 +1292,35 @@ class Recorder:
                     item.error = error
                     self.changed()
                     return
-            elif mp3 and os.path.exists(mp3) and not await unmark(mp3):
-                item.error = "could not update the MP3's tags"
-                self.changed()
-                return
+            else:
+                if mp3 and os.path.exists(mp3) and not await unmark(mp3):
+                    item.error = "could not update the MP3's tags"
+                    self.changed()
+                    return
+                if item.flac and os.path.exists(item.flac):
+                    error = self._unhide(item)
+                    if error:
+                        item.error = error
+                        self.changed()
+                        return
             self.items.pop(item.id, None)
             self.changed()
+
+    def _unhide(self, item):
+        """Keep a failed recording's FLAC (the only copy) as a visible file,
+        so it isn't taken for a crashed recording at the next start."""
+        base = os.path.basename(item.flac)[1:-5]
+        for n in itertools.count(1):
+            name = base if n == 1 else f"{base} ({n})"
+            path = os.path.join(os.path.dirname(item.flac), name + ".flac")
+            if not os.path.lexists(path):
+                break
+        try:
+            os.rename(item.flac, path)
+        except OSError as e:
+            return f"could not keep the FLAC: {e.strerror}"
+        print(f"grabd: kept {path}", flush=True)
+        return ""
 
     async def remove_finished(self, with_data=False, permanently=False):
         for item in list(self.items.values()):

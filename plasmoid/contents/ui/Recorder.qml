@@ -95,13 +95,18 @@ QtObject {
                              "Delete", () => call("Delete", [id]));
     }
     function removeFinishedWithFiles(permanently) {
-        const n = finishedCount;
-        if (!permanently)
+        if (!permanently) {
             removeFinished(true);
-        else
-            confirmRequested("Delete Files?",
-                             `${n === 1 ? "The recording" : `All ${n} recordings`} in the list will be deleted permanently.`,
-                             "Delete All", () => call("DeleteFinished", []));
+            return;
+        }
+        // exactly the recordings listed now: not ones that finish while the dialog is open
+        const ids = [];
+        for (let i = 0; i < records.count; i++)
+            ids.push(records.get(i).itemId);
+        const n = ids.length;
+        confirmRequested("Delete Files?",
+                         `${n === 1 ? "The recording" : `All ${n} recordings`} in the list will be deleted permanently.`,
+                         "Delete All", () => ids.forEach(id => call("Delete", [id])));
     }
 
     function apply(json) {

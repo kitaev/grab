@@ -118,7 +118,8 @@ Trash*, *Remove Entry and Move to Trash* and *Remove All Entries and Move to
 Trash*. Hold **Shift** while the menu is open, as in Dolphin, and these items
 change to delete the files permanently instead. Permanent deletes ask for
 confirmation first. *Remove Entry* takes a recording off the list and keeps
-its file.
+its file. For a failed recording that means the lossless `.flac` it was
+recorded into, which is kept next to the MP3s as a normal visible file.
 
 ## Sharing recordings
 

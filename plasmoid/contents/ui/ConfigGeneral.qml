@@ -118,7 +118,9 @@ KCM.SimpleKCM {
     FolderDialog {
         id: folderDialog
         title: "Save Recordings In"
-        currentFolder: "file://" + encodeURI(page.folder || page.defaultFolder)
+        // each part encoded: encodeURI() leaves "#" and "?", which end a URL's path
+        currentFolder: "file://" + (page.folder || page.defaultFolder).split("/")
+                                   .map(encodeURIComponent).join("/")
         onAccepted: folderField.text = decodeURIComponent(selectedFolder.toString().replace(/^file:\/\//, ""))
     }
 }
