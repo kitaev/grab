@@ -498,4 +498,15 @@ Item {
             }
         }
     }
+
+    // Right-click anywhere on the entry (or long-press on touch): its "⋮" menu, at the pointer
+    TapHandler {
+        objectName: "contextTap"
+        acceptedButtons: Qt.RightButton
+        onTapped: moreButton.menu.popup()
+    }
+    TapHandler {
+        acceptedDevices: PointerDevice.TouchScreen
+        onLongPressed: moreButton.menu.popup()
+    }
 }
