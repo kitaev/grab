@@ -36,6 +36,11 @@ Item {
     readonly property bool controllable: ["available", "recording", "paused"].indexOf(itemState) >= 0
 
     implicitHeight: column.implicitHeight + column.anchors.topMargin + column.anchors.bottomMargin
+
+    // Buttons are taller than a text line: shift them up so they are centred on
+    // the title's first line rather than hanging below it.
+    FontMetrics { id: titleMetrics; font: titleLabel.font }
+    readonly property real buttonShift: -Math.max(0, (toggleButton.implicitHeight - titleMetrics.height) / 2)
     implicitWidth: column.implicitWidth
 
     function mmss(sec) {
@@ -117,6 +122,7 @@ Item {
             Item {                         // record/pause for streams, a file icon for recordings
                 id: lead
                 Layout.alignment: Qt.AlignTop
+                Layout.topMargin: row.buttonShift
                 implicitWidth: toggleButton.implicitWidth
                 implicitHeight: toggleButton.implicitHeight
 
@@ -172,6 +178,7 @@ Item {
                 Layout.alignment: Qt.AlignTop
 
                 PlasmaComponents3.Label {
+                    id: titleLabel
                     Layout.fillWidth: true
                     text: row.title
                     wrapMode: Text.Wrap
@@ -182,6 +189,8 @@ Item {
             }
 
             PlasmaComponents3.ToolButton {     // paused stream with a saved snapshot
+                Layout.alignment: Qt.AlignTop      // with the title, like the icon on the left
+                Layout.topMargin: row.buttonShift
                 icon.name: "folder-open"
                 text: "Show in Folder"
                 display: PlasmaComponents3.AbstractButton.IconOnly
@@ -195,6 +204,8 @@ Item {
             PlasmaComponents3.ToolButton {     // a recording's actions
                 id: moreButton
                 objectName: "moreButton"
+                Layout.alignment: Qt.AlignTop
+                Layout.topMargin: row.buttonShift
                 icon.name: "view-more-symbolic"
                 text: "Actions"
                 display: PlasmaComponents3.AbstractButton.IconOnly
