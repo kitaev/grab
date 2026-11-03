@@ -1,5 +1,6 @@
-// One grabd item: title and state, record/pause and file buttons, and for
-// streams that can be recorded the microphone combobox on the row below.
+// One grabd item: record/pause (or, for a recording, a file icon) left of the
+// title and state, file buttons on the right, and for streams that can be
+// recorded the microphone combobox on the row below.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -90,18 +91,43 @@ Item {
             spacing: Kirigami.Units.smallSpacing
             Layout.fillWidth: true
 
-            Rectangle {                    // red while recording
-                Layout.alignment: Qt.AlignVCenter
-                implicitWidth: Kirigami.Units.iconSizes.small / 2
-                implicitHeight: implicitWidth
-                radius: width / 2
-                color: Kirigami.Theme.negativeTextColor
-                visible: row.itemState === "recording"
+            Item {                         // record/pause for streams, a file icon for recordings
+                id: lead
+                Layout.alignment: Qt.AlignTop
+                implicitWidth: toggleButton.implicitWidth
+                implicitHeight: toggleButton.implicitHeight
+
+                PlasmaComponents3.ToolButton {
+                    id: toggleButton
+                    objectName: "toggleButton"
+                    anchors.fill: parent
+                    visible: !row.finished
+                    icon.name: row.toggleAction.icon
+                    icon.width: Kirigami.Units.iconSizes.smallMedium
+                    icon.height: Kirigami.Units.iconSizes.smallMedium
+                    text: row.toggleAction.text
+                    display: PlasmaComponents3.AbstractButton.IconOnly
+                    enabled: row.controllable && row.stream
+                    opacity: enabled ? 1 : 0.35
+                    onClicked: row.recorder.toggle(row.itemId)
+                    PlasmaComponents3.ToolTip.text: text
+                    PlasmaComponents3.ToolTip.visible: hovered
+                    PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                }
+
+                Kirigami.Icon {
+                    anchors.centerIn: parent
+                    visible: row.finished
+                    source: row.itemState === "failed" ? "dialog-error" : "audio-x-generic"
+                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                    implicitHeight: implicitWidth
+                }
             }
 
             ColumnLayout {
                 spacing: 0
                 Layout.fillWidth: true
+                Layout.alignment: Qt.AlignTop
 
                 PlasmaComponents3.Label {
                     Layout.fillWidth: true
@@ -120,19 +146,6 @@ Item {
                                                                : Kirigami.Theme.textColor
                     opacity: row.itemState === "failed" || row.error ? 1 : 0.7
                 }
-            }
-
-            PlasmaComponents3.ToolButton {
-                objectName: "toggleButton"
-                icon.name: row.toggleAction.icon
-                text: row.toggleAction.text
-                display: PlasmaComponents3.AbstractButton.IconOnly
-                enabled: row.controllable && row.stream
-                opacity: enabled ? 1 : 0.35
-                onClicked: row.recorder.toggle(row.itemId)
-                PlasmaComponents3.ToolTip.text: text
-                PlasmaComponents3.ToolTip.visible: hovered
-                PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
             }
 
             PlasmaComponents3.ToolButton {
@@ -179,6 +192,7 @@ Item {
         RowLayout {                        // only for streams that can still be recorded
             spacing: Kirigami.Units.smallSpacing
             Layout.fillWidth: true
+            Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing   // under the title
             visible: row.controllable
 
             Kirigami.Icon {
