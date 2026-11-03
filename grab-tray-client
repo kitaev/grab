@@ -4,8 +4,9 @@
 Shows grabd's items (recordable streams, recordings, finished files) in a
 tray menu that opens on left and right click (StatusNotifierItem with
 ItemIsMenu, works on Wayland). Per item: Record / Pause / Resume, the
-microphone input mixed into the recording, and for finished items Open,
-Show in folder, Dismiss. Reports Status for KDE's "Shown when relevant".
+microphone input mixed into the recording, and for finished items (including
+MP3s grabd found in the recordings folder) Open, Show in folder, Dismiss.
+Reports Status for KDE's "Shown when relevant".
 
 Requires: python-dbus-next; the grabd service.
 """
@@ -486,6 +487,7 @@ class Tray:
         st = it["state"]
         children = [{"label": self.state_text(it), "enabled": False}]
 
+        mic = f"Microphone: {it.get('input_description', 'None')}"
         if st in ("available", "recording", "paused"):
             verb, icon = {"available": ("Record", "media-record"),
                           "recording": ("Pause", "media-playback-pause"),
@@ -493,9 +495,11 @@ class Tray:
             enabled = it.get("stream", True)
             children.append({"label": verb, "icon": icon, "enabled": enabled,
                              "action": self.call(self.svc.call_toggle, it["id"])})
-            children.append({"label": f"Microphone: {it.get('input_description', 'None')}",
-                             "icon": "audio-input-microphone",
+            children.append({"label": mic, "icon": "audio-input-microphone",
                              "children": self.input_menu(it)})
+        else:                              # encoding / finished: same layout, nothing to do
+            children.append({"label": "Record", "icon": "media-record", "enabled": False})
+            children.append({"label": mic, "icon": "audio-input-microphone", "enabled": False})
 
         if it.get("file") and os.path.exists(it["file"]):
             children.append({"separator": True})

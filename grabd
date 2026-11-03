@@ -24,6 +24,10 @@ snapshot; resume relinks and appends. When the stream disappears the item is
 finalized (state encoding -> done/empty/failed) and stays until dismissed.
 Encodes are serialized in one background queue and coalesced per item.
 
+Other MP3s in the recordings folder (earlier sessions, copied in) are listed
+as done items too. Dismissing a finished item remembers its file so it is not
+listed again; items whose file is deleted disappear.
+
 Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
 """
 import asyncio
@@ -48,6 +52,10 @@ AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
       "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
+SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
+STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
+                         "grab")
+DISMISSED_FILE = os.path.join(STATE_DIR, "dismissed.json")
 
 EXCLUDE_APP_RE = ""        # apps never offered (regex on application.name)
 EXCLUDE_ROLE_RE = r"^(event|notification)$"
@@ -60,6 +68,8 @@ IFACE = "org.grab.Recorder1"
 MPRIS_PREFIX = "org.mpris.MediaPlayer2"
 MPRIS_PATH = "/org/mpris/MediaPlayer2"
 MPRIS_PLAYER = "org.mpris.MediaPlayer2.Player"
+
+TIMESTAMP_RE = r"^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_"   # prefix of our file names
 
 FINISHED = ("done", "empty", "failed")
 ACTIVE = ("recording", "paused")
@@ -98,6 +108,25 @@ def real_title(t):
 
 def unwrap(d):
     return {k: (v.value if isinstance(v, Variant) else v) for k, v in d.items()}
+
+
+def load_dismissed():
+    try:
+        with open(DISMISSED_FILE) as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
+def save_dismissed(paths):
+    try:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        tmp = DISMISSED_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(sorted(paths), f, ensure_ascii=False, indent=0)
+        os.replace(tmp, DISMISSED_FILE)
+    except OSError as e:
+        print(f"grabd: could not save {DISMISSED_FILE} ({e})", flush=True)
 
 
 def fname(t):
@@ -355,7 +384,7 @@ class Players:
         if not title and meta.get("xesam:url"):
             path = urllib.parse.urlparse(meta["xesam:url"]).path
             title = os.path.splitext(urllib.parse.unquote(os.path.basename(path)))[0]
-            title = re.sub(r"^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_", "", title)  # our own files
+            title = re.sub(TIMESTAMP_RE, "", title)
         artist = ", ".join(a for a in meta.get("xesam:artist") or [] if a.strip())
         if title and artist and artist.lower() not in title.lower():
             title = f"{artist} - {title}"
@@ -381,6 +410,7 @@ class Recorder:
         self.queue = EncodeQueue(self.encoded)
         self.stopping = False
         self.players = None                # Players, once the bus is up
+        self.dismissed = load_dismissed()  # paths of files not to list again
         self._emit = None
         self._timers = {}
 
@@ -599,6 +629,47 @@ class Recorder:
     def dismiss(self, item):
         if item.state in FINISHED:
             self.items.pop(item.id, None)
+            if item.file:
+                self.dismissed.add(item.file)
+                save_dismissed(self.dismissed)
+            self.changed()
+
+    # ---- files in the recordings folder
+
+    async def scan_files(self):
+        """List MP3s that no item owns as done items; drop done items whose
+        file is gone."""
+        if self.stopping:
+            return
+        try:
+            names = os.listdir(OUTDIR)
+        except OSError:
+            return                         # don't take an unreadable folder for an empty one
+        present = {os.path.join(OUTDIR, n) for n in names
+                   if n.endswith(".mp3") and not n.startswith(".")}
+        changed = False
+
+        for item in list(self.items.values()):
+            if item.state == "done" and item.file not in present:
+                self.items.pop(item.id, None)
+                changed = True
+
+        owned = {p for i in self.items.values() for p in (i.mp3, i.file) if p}
+        for path in sorted(present - owned - self.dismissed):
+            sec = await duration(path)
+            if any(path in (i.mp3, i.file) for i in self.items.values()):
+                continue                   # an item claimed it meanwhile
+            title = re.sub(TIMESTAMP_RE, "", os.path.basename(path)[:-4]) or "audio"
+            item = Item(title=title, app="file")
+            item.state, item.file, item.mp3, item.duration = "done", path, path, sec
+            self.items[item.id] = item
+            changed = True
+
+        gone = {p for p in self.dismissed if p not in present}
+        if gone:
+            self.dismissed -= gone
+            save_dismissed(self.dismissed)
+        if changed:
             self.changed()
 
     # ---- encode results
@@ -716,6 +787,12 @@ async def subscribe(rec):
         await rec.refresh_streams()
 
 
+async def scan_loop(rec):
+    while True:
+        await rec.scan_files()
+        await asyncio.sleep(SCAN_INTERVAL)
+
+
 async def main():
     os.makedirs(OUTDIR, exist_ok=True)
     rec = Recorder()
@@ -747,8 +824,9 @@ async def main():
         loop.add_signal_handler(sig, lambda: loop.create_task(on_signal()))
 
     sub = loop.create_task(subscribe(rec))
+    scan = loop.create_task(scan_loop(rec))
     await stop.wait()
-    for t in (sub, worker):
+    for t in (sub, scan, worker):
         t.cancel()
         try:
             await t
