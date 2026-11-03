@@ -448,9 +448,6 @@ class Tray:
         except Exception:
             await self.open_path(os.path.dirname(path))
 
-    async def quit(self):
-        self.stop.set()
-
     # ---- rendering
 
     def state_text(self, it):
@@ -544,8 +541,6 @@ class Tray:
         entries.append({"separator": True})
         entries.append({"label": "Open recordings folder", "icon": "folder-music",
                         "action": (lambda: self.open_path(OUTDIR))})
-        entries.append({"label": "Quit tray", "icon": "application-exit",
-                        "action": self.quit})
         self.menu.set_items(entries)
 
         recording = [i for i in self.items if i["state"] == "recording"]
