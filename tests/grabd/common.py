@@ -64,9 +64,10 @@ class GrabdTest(unittest.IsolatedAsyncioTestCase):
         rec._load_sink, rec._sink_node, rec._link = load_sink, sink_node, link
 
     @staticmethod
-    def stream(index=7, title="Song", node=50):
+    def stream(index=7, title="Song", node=50, pid=1234, app="Firefox"):
         return {"index": index, "corked": False,
-                "properties": {"object.id": node, "media.name": title}}
+                "properties": {"object.id": node, "media.name": title,
+                               "application.name": app, "application.process.id": pid}}
 
     async def wait_for(self, cond, timeout=5.0):
         for _ in range(int(timeout / 0.05)):

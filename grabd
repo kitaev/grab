@@ -57,8 +57,10 @@ chosen input into the other two. One ffmpeg captures it as a single stream
 background noise, mixes both and writes a lossless FLAC with silence removed.
 If the input's source goes away or changes (mic unplugged and replugged, new
 default), it is relinked. Pause unlinks and saves an MP3
-snapshot; resume relinks and appends. When the stream disappears the item is
-finalized (state encoding -> done/empty/failed) and stays until removed.
+snapshot; resume relinks and appends. When the stream disappears, a new
+stream of the same process with the same title within STREAM_GRACE seconds
+takes its place (Firefox replaces a stream paused for a few seconds when it
+resumes); otherwise the item is finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
 
 Muted playback: the stream is linked into a private silent sink (grab_silent,
@@ -222,6 +224,7 @@ MIX = (f"[0:a]pan=stereo|c0=c0|c1=c1[stream];"
        f"[stream][mic]amix=inputs=2:duration=longest:normalize=0,{AF}")
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
+STREAM_GRACE = 3.0         # a recorded stream gone: wait this long for its replacement
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
 UPDATE_CHECK_INTERVAL = 5.0  # how often to check whether grabd itself was replaced
 EXIT_UPDATED = 75          # exit status asking systemd to start the new grabd (see grabd.service)
@@ -527,6 +530,7 @@ class Stream:
         self.node = str(p.get("object.id"))
         self.media = p.get("media.name", "")
         self.app = p.get("application.name", "Audio")
+        self.process = Stream.pid(si)
         self.corked = si.get("corked", False)
         self.player_title = player_title   # from the app's MPRIS player, if any
 
@@ -571,6 +575,7 @@ class Item:
         self.stream = stream
         self.title = stream.title if stream else title
         self.app = stream.app if stream else app
+        self.process = stream.process if stream else ""   # the app's process id
         self.state = "available"
         self.busy = False
         self.pending = False               # a Toggle is in progress
@@ -585,6 +590,7 @@ class Item:
         self.error = ""
         self.started = ""                  # ISO time the recording started
         self.recorded = False              # recorded by this grabd (not found by a scan)
+        self.lost = False                  # recording, its stream gone: waiting for a new one
         self.input_desc = ""               # input as recorded, if no longer known (recovered)
         # recording internals
         self.sink = ""
@@ -971,7 +977,7 @@ class Recorder:
                 if item.state == "available" and not item.pending:
                     self.items.pop(item.id, None)  # (starting: toggle() decides)
                 elif item.state in ACTIVE:
-                    asyncio.get_running_loop().create_task(self.finalize(item))
+                    self._lose(item)
             else:
                 item.stream = s
                 if item.state == "available" or s.has_title:
@@ -982,7 +988,52 @@ class Recorder:
                 item = Item(s)
                 self.items[item.id] = item
                 self.by_stream[idx] = item
+        self._adopt_replacements()
         self.changed()
+
+    def _lose(self, item):
+        """A recording's stream is gone: keep recording (silence, which isn't
+        saved) for STREAM_GRACE seconds in case a replacement appears (see
+        _adopt_replacements); then finalize."""
+        if item.lost:
+            return
+        item.lost = True
+        loop = asyncio.get_running_loop()
+
+        def timeout():
+            if item.lost and item.stream is None and item.state in ACTIVE:
+                loop.create_task(self.finalize(item))
+        loop.call_later(STREAM_GRACE, timeout)
+
+    def _adopt_replacements(self):
+        """Give each lost recording the stream that replaced its old one: a
+        new stream (offered as an available item) of the same process with
+        the same title. Its item goes; the recording continues in the same
+        file."""
+        for item in list(self.items.values()):
+            if not (item.lost and item.stream is None and item.state in ACTIVE):
+                continue
+            new = next((c for c in self.items.values()
+                        if c.state == "available" and c.stream and not c.pending
+                        and not c.muted and c.stream.process == item.process
+                        and c.stream.app == item.app and c.stream.title == item.title), None)
+            if not new:
+                continue
+            s = new.stream
+            print(f"grabd: {item.title!r}: following its new stream {s.idx}", flush=True)
+            self.items.pop(new.id, None)
+            self.by_stream[s.idx] = item
+            item.stream, item.lost = s, False
+            asyncio.get_running_loop().create_task(self._relink_stream(item))
+
+    async def _relink_stream(self, item):
+        """Link the item's (new) stream into its recording sink if it is
+        recording; a paused one is linked when resumed."""
+        async with item.op:
+            if item.state == "recording" and item.stream:
+                await self._unlink(item.stream_links)
+                item.stream_links = await self._link(item.stream.node, item.sink_node, STREAM_CH)
+                self.changed()
 
     # ---- inputs
 
@@ -1152,7 +1203,8 @@ class Recorder:
             # end what was started, or drop the entry
             if item.stream is None and self.items.get(item.id) is item:
                 if item.state in ACTIVE:
-                    asyncio.get_running_loop().create_task(self.finalize(item))
+                    self._lose(item)
+                    self._adopt_replacements()
                 elif item.state == "available":
                     self.items.pop(item.id, None)
             self.changed()

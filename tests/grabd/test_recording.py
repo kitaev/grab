@@ -122,3 +122,75 @@ class StreamGoneWhileStarting(GrabdTest):
         await self.rec.refresh_streams()
         await self.wait_for(lambda: not self.item.pending)
         self.assertNotIn(self.item.id, self.rec.items)
+
+
+class StreamReplaced(GrabdTest):
+    """Firefox replaces a stream paused for a few seconds when it resumes:
+    the recording follows the new stream instead of ending."""
+
+    async def asyncSetUp(self):
+        self.g.STREAM_GRACE = 0.5
+        self.rec = self.g.Recorder()
+        self.worker = asyncio.create_task(self.rec.queue.worker())
+        self.streams = [self.stream()]
+        self.fake_pipewire(self.rec, self.streams)
+        self.links = []
+
+        async def link(src, dst, channels):
+            self.links.append(src)
+            return [("1", "2")]
+        self.rec._link = link
+
+        async def no_input(item):
+            pass
+        self.rec._link_input = no_input
+        await self.rec.refresh_streams()
+        (self.item,) = self.rec.items.values()
+        self.rec.request_toggle(self.item)
+        await self.wait_for(lambda: self.item.state == "recording" and not self.item.pending)
+
+    async def asyncTearDown(self):
+        await self.rec.shutdown()
+        if self.item.proc and self.item.proc.returncode is None:
+            self.item.proc.kill()
+        self.worker.cancel()
+
+    async def replace(self, **new):
+        self.streams[:] = [self.stream(**new)]
+        await self.rec.refresh_streams()
+
+    async def test_follows(self):
+        await self.replace(index=8, node=51)
+        await asyncio.sleep(0.1)
+        self.assertEqual(list(self.rec.items.values()), [self.item], "no second entry")
+        self.assertEqual(self.item.stream.idx, 8)
+        self.assertEqual(self.links[-1], "51", "linked the new stream")
+        await asyncio.sleep(0.7)                       # past the grace period
+        self.assertEqual(self.item.state, "recording")
+
+    async def test_follows_while_paused(self):
+        self.rec.request_toggle(self.item)
+        await self.wait_for(lambda: self.item.state == "paused" and not self.item.pending)
+        await self.replace(index=8, node=51)
+        await asyncio.sleep(0.7)
+        self.assertEqual(self.item.state, "paused")
+        self.rec.request_toggle(self.item)             # resume: the new stream
+        await self.wait_for(lambda: self.item.state == "recording" and not self.item.pending)
+        self.assertEqual(self.links[-1], "51")
+
+    async def test_ends_without_replacement(self):
+        self.streams.clear()
+        await self.rec.refresh_streams()
+        await asyncio.sleep(0.2)
+        self.assertEqual(self.item.state, "recording", "waits for a replacement first")
+        await self.wait_for(lambda: self.item.state in self.g.FINISHED)
+
+    async def test_other_title_not_followed(self):
+        await self.replace(index=8, node=51, title="Another video")
+        await self.wait_for(lambda: self.item.state in self.g.FINISHED)
+        self.assertEqual(len(self.rec.items), 2)
+
+    async def test_other_process_not_followed(self):
+        await self.replace(index=8, node=51, pid=999)
+        await self.wait_for(lambda: self.item.state in self.g.FINISHED)
+        self.assertEqual(len(self.rec.items), 2)
