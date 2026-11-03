@@ -506,9 +506,6 @@ class Tray:
 
         if it.get("file") and os.path.exists(it["file"]):
             children.append({"separator": True})
-            if st not in ("done", "empty", "failed"):
-                children.append({"label": "Open", "icon": "media-playback-start",
-                                 "action": (lambda p=it["file"]: self.open_path(p))})
             children.append({"label": "Show in folder", "icon": "folder-open",
                              "action": (lambda p=it["file"]: self.show_in_folder(p))})
 
