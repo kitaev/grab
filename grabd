@@ -1212,9 +1212,29 @@ class Recorder:
         item.error = f"recording stopped: ffmpeg exited ({rc})"
         item.ffmpeg_died = True
         if item.state in ACTIVE:
+            async with item.op:
+                if item.state in ACTIVE:
+                    self._detach_stream(item)
             await self.finalize(item)
         else:
             self.changed()             # still starting: _start sees the error
+
+    def _detach_stream(self, item):
+        """Offer the item's stream again as a new item, so it can be recorded
+        again while the item keeps what was recorded. The new item takes over
+        the stream's settings: input, echo cancellation and muted playback."""
+        s = item.stream
+        if not s or self.by_stream.get(s.idx) is not item:
+            return
+        new = Item(s)
+        new.input, new.echo_cancel = item.input, item.echo_cancel
+        new.muted, new.silent_links, new.playback_node = \
+            item.muted, item.silent_links, item.playback_node
+        item.muted, item.silent_links, item.playback_node = False, [], None
+        item.stream = None
+        self.items[new.id] = new
+        self.by_stream[s.idx] = new
+        self.changed()
 
     async def set_input(self, item, inp):
         async with item.op:
