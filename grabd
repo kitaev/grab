@@ -51,6 +51,8 @@ the Trash (restoring them brings the item back). Items disappear when their
 MP3 is deleted or loses the marker.
 
 Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
+Optional: python-mutagen (reads tags and removes the marker in place, in
+milliseconds; without it ffprobe reads tags and ffmpeg copies the file).
 """
 import asyncio
 import glob
@@ -61,6 +63,12 @@ import re
 import signal
 import time
 import urllib.parse
+
+try:
+    import mutagen
+    from mutagen.id3 import ID3
+except ImportError:                        # optional; ffprobe/ffmpeg are the fallback
+    mutagen = None
 
 from dbus_next import BusType, Message, MessageType, Variant
 from dbus_next.aio import MessageBus
@@ -139,8 +147,37 @@ async def probe(path):
     return {"duration": dur, "tags": {k.lower(): v for k, v in fmt.get("tags", {}).items()}}
 
 
+def probe_mutagen(path):
+    """Like probe(), read directly with mutagen: a few milliseconds, no process."""
+    f = mutagen.File(path)
+    if f is None or f.info is None:
+        return None
+    tags = {}
+    if isinstance(f.tags, ID3):                # MP3
+        for frame in f.tags.values():
+            if frame.FrameID == "TXXX":
+                tags[frame.desc.lower()] = str(frame.text[0]) if frame.text else ""
+            elif frame.FrameID == "TIT2":
+                tags["title"] = str(frame.text[0])
+            elif frame.FrameID == "TDRC":          # mutagen writes "2026-11-01 12:00:00"
+                tags["date"] = re.sub(r"^(\d{4}-\d\d-\d\d) ", r"\1T", str(frame.text[0]))
+    elif f.tags is not None:                   # FLAC: Vorbis comments
+        tags = {k.lower(): v[0] for k, v in f.tags.items() if v}
+    return {"duration": float(f.info.length or 0), "tags": tags}
+
+
+async def tag_info(path):
+    """probe() via mutagen when installed, else ffprobe."""
+    if mutagen:
+        try:
+            return probe_mutagen(path)
+        except Exception:
+            pass
+    return await probe(path)
+
+
 async def duration(path):
-    info = await probe(path)
+    info = await tag_info(path)
     return info["duration"] if info else 0.0
 
 
@@ -178,7 +215,7 @@ async def read_tags(path):
     cached = _tag_cache.get(path)
     if cached and cached[0] == key:
         return cached[1]
-    info = await probe(path)
+    info = await tag_info(path)
     tags = info["tags"] if info else {}
     meta = None
     if tags.get("grab") == "1":
@@ -190,7 +227,16 @@ async def read_tags(path):
 
 
 async def unmark(mp3):
-    """Strip our marker tag from an MP3 (lossless copy, then replace). True if done."""
+    """Strip our marker tag from an MP3: in place with mutagen, else a lossless
+    copy that replaces it. True if done."""
+    if mutagen:
+        try:
+            tags = ID3(mp3)
+            tags.delall("TXXX:grab")
+            tags.save()
+            return True
+        except Exception as e:
+            print(f"grabd: mutagen could not update {mp3} ({e}); copying with ffmpeg", flush=True)
     tmp = os.path.join(os.path.dirname(mp3), "." + os.path.basename(mp3) + ".tmp.mp3")
     rc, _ = await run("ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", mp3,
                       "-map", "0", "-c", "copy", "-map_metadata", "0", "-metadata", "grab=", tmp)
