@@ -43,8 +43,8 @@ PlasmoidItem {
         onClicked: root.expanded = !root.expanded
 
         // A microphone in a ring, like Breeze's media-playback-* icons (the
-        // Media Player's tray icon): on their 22 px grid a 16 px ring with a
-        // 1 px line around a small symbol. Theme text colour; the ring is red
+        // Media Player's tray icon): on their 22 px grid a 16 px ring around a
+        // small symbol. Theme text colour; the ring is red
         // while recording.
         Item {
             id: icon
@@ -58,7 +58,9 @@ PlasmoidItem {
                 height: width
                 radius: width / 2
                 color: "transparent"
-                border.width: Math.max(1, Math.round(icon.width / 22))
+                // 1 px more than the grid's: at the same width it looked thinner in the
+                // tray than the media icon
+                border.width: Math.max(1, Math.round(icon.width / 22)) + 1
                 border.color: root.recording ? "#da4453"
                             : compact.containsMouse ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
             }
