@@ -8,7 +8,13 @@
         "Category": "Multimedia",
         "License": "GPL-3.0-or-later",
         "Version": "1.0",
-        "Authors": [{ "Name": "razrab", "Email": "kitaev@gmail.com" }]
+        "Authors": [
+            {
+                "Name": "razrab",
+                "Email": "kitaev@gmail.com"
+            }
+        ],
+        "EnabledByDefault": true
     },
     "X-Plasma-API-Minimum-Version": "6.0",
     "X-Plasma-NotificationArea": "true",
