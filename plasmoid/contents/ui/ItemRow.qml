@@ -16,6 +16,7 @@ Item {
     required property string title
     required property string itemState
     required property bool busy
+    required property bool pending
     required property bool stream
     required property string input
     required property string input_description
@@ -24,6 +25,12 @@ Item {
     required property string error
 
     readonly property bool finished: recorder.isFinished(itemState)
+    // clicked: set on click until grabd reports the toggle (pending) or a new state,
+    // so the button reacts at once; the timer covers a click grabd never answers
+    property bool clicked: false
+    readonly property bool toggling: pending || clicked
+    onPendingChanged: clicked = false
+    onItemStateChanged: clicked = false
     readonly property bool controllable: ["available", "recording", "paused"].indexOf(itemState) >= 0
 
     implicitHeight: column.implicitHeight + Kirigami.Units.smallSpacing * 2
@@ -46,7 +53,7 @@ Item {
             "empty": "Nothing recorded",
             "failed": `Failed: ${error || "unknown error"}`,
         }[itemState] || itemState;
-        if ((itemState === "done" || itemState === "empty") && error)
+        if (error && itemState !== "failed")     // failed already says why
             text += ` · ${error}`;
         if (busy && (itemState === "recording" || itemState === "paused"))
             text += " · saving…";
@@ -102,17 +109,36 @@ Item {
                     objectName: "toggleButton"
                     anchors.fill: parent
                     visible: !row.finished
-                    icon.name: row.toggleAction.icon
+                    icon.name: row.toggling ? "" : row.toggleAction.icon   // spinner shows instead
                     icon.width: Kirigami.Units.iconSizes.smallMedium
                     icon.height: Kirigami.Units.iconSizes.smallMedium
                     text: row.toggleAction.text
                     display: PlasmaComponents3.AbstractButton.IconOnly
-                    enabled: row.controllable && row.stream
-                    opacity: enabled ? 1 : 0.35
-                    onClicked: row.recorder.toggle(row.itemId)
+                    enabled: row.controllable && row.stream && !row.toggling
+                    opacity: enabled || row.toggling ? 1 : 0.35
+                    onClicked: {
+                        row.clicked = true;
+                        clickTimeout.restart();
+                        row.recorder.toggle(row.itemId);
+                    }
                     PlasmaComponents3.ToolTip.text: text
                     PlasmaComponents3.ToolTip.visible: hovered
                     PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                }
+
+                PlasmaComponents3.BusyIndicator {
+                    objectName: "toggleBusy"
+                    anchors.centerIn: parent
+                    width: Kirigami.Units.iconSizes.smallMedium
+                    height: width
+                    visible: row.toggling
+                    running: visible
+                }
+
+                Timer {
+                    id: clickTimeout
+                    interval: 3000
+                    onTriggered: row.clicked = false
                 }
 
                 Kirigami.Icon {

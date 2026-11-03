@@ -57,6 +57,7 @@ ColumnLayout {
                     title: entry.model.title
                     itemState: entry.model.itemState
                     busy: entry.model.busy
+                    pending: entry.model.pending
                     stream: entry.model.stream
                     input: entry.model.input
                     input_description: entry.model.input_description

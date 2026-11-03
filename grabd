@@ -17,10 +17,14 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   signal StateChanged(s)                GetState() after any change (for clients
                                         that handle JSON more easily than variants)
 
-Item properties: id, title, app, state, busy, stream, input, input_description,
-file, duration, error.
-  state: available | recording | paused | encoding | done | empty | failed
-  busy:  an MP3 snapshot/final encode is queued or running for this item
+Item properties: id, title, app, state, busy, pending, stream, input,
+input_description, file, duration, error.
+  state:   available | recording | paused | encoding | done | empty | failed
+  busy:    an MP3 snapshot/final encode is queued or running for this item
+  pending: a Toggle is in progress (starting, pausing or resuming); further
+           Toggles are ignored until it is done
+  error:   why the last start failed (state stays available), or for
+           finished items what went wrong
 
 Recording: two hidden virtual null sinks per recording, one for the app stream
 and one for the chosen input, linked alongside their normal routing; one
@@ -267,6 +271,7 @@ class Item:
         self.app = stream.app if stream else app
         self.state = "available"
         self.busy = False
+        self.pending = False               # a Toggle is in progress
         self.input = ""                    # "" none, "default", or source name
         self.file = ""
         self.duration = 0.0
@@ -295,6 +300,7 @@ class Item:
             "app": Variant("s", self.app),
             "state": Variant("s", self.state),
             "busy": Variant("b", self.busy),
+            "pending": Variant("b", self.pending),
             "stream": Variant("b", self.stream is not None),
             "input": Variant("s", self.input),
             "input_description": Variant("s", input_desc),
@@ -598,22 +604,36 @@ class Recorder:
 
     # ---- actions
 
+    def request_toggle(self, item):
+        """Start a toggle unless one is already in progress (e.g. a double click,
+        which would otherwise pause right after starting). Marked synchronously,
+        before any await, so back-to-back calls can't both get through."""
+        if item.pending:
+            return
+        item.pending = True
+        self.changed()
+        asyncio.get_running_loop().create_task(self.toggle(item))
+
     async def toggle(self, item):
-        async with item.op:
-            if item.state == "available" and item.stream:
-                await self._start(item)
-            elif item.state == "recording":
-                await self._unlink(item.stream_links)
-                await self._unlink_input(item)
-                item.state = "paused"
-                self.changed()
-                asyncio.get_running_loop().call_later(
-                    SAVE_DELAY, lambda: (self.queue.request(item), self.changed()))
-            elif item.state == "paused" and item.stream:
-                item.stream_links = await self._link(item.stream.node, item.sink_node)
-                await self._link_input(item)
-                item.state = "recording"
-                self.changed()
+        try:
+            async with item.op:
+                if item.state == "available" and item.stream:
+                    await self._start(item)
+                elif item.state == "recording":
+                    await self._unlink(item.stream_links)
+                    await self._unlink_input(item)
+                    item.state = "paused"
+                    self.changed()
+                    asyncio.get_running_loop().call_later(
+                        SAVE_DELAY, lambda: (self.queue.request(item), self.changed()))
+                elif item.state == "paused" and item.stream:
+                    item.stream_links = await self._link(item.stream.node, item.sink_node)
+                    await self._link_input(item)
+                    item.state = "recording"
+                    self.changed()
+        finally:
+            item.pending = False
+            self.changed()
 
     async def _start(self, item):
         s = item.stream
@@ -824,7 +844,7 @@ class RecorderInterface(ServiceInterface):
     def Toggle(self, item_id: "s"):
         item = self._item(item_id)
         if item:
-            self._spawn(self.rec.toggle(item))
+            self.rec.request_toggle(item)
 
     @method()
     def SetInput(self, item_id: "s", input_name: "s"):
