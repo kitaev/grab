@@ -204,23 +204,40 @@ class StatusNotifierItem(ServiceInterface):
 
 class DBusMenu(ServiceInterface):
     """Menu tree. Entry keys: label, icon, enabled, separator, radio (bool
-    checked), action (coroutine fn), children (list)."""
+    checked), action (coroutine fn), children (list), key (stable identity;
+    defaults to the label).
+
+    Hosts cache entries by id and refresh only the top level on LayoutUpdated,
+    so an id must keep meaning the same entry of the same kind: ids are
+    assigned per (parent, key, kind) and never reused for anything else."""
 
     def __init__(self):
         super().__init__("com.canonical.dbusmenu")
         self.revision = 1
         self.nodes = {0: ({"children-display": Variant("s", "submenu")}, [])}
         self.actions = {}
+        self.ids = {}                      # (parent id, key, kind) -> id
+        self.last_id = 0
+
+    def _id(self, ident):
+        if ident not in self.ids:
+            self.last_id += 1
+            self.ids[ident] = self.last_id
+        return self.ids[ident]
 
     def set_items(self, entries):
         self.nodes, self.actions = {}, {}
-        counter = [0]
+        used = {}
 
-        def add(entry_list):
-            ids = []
+        def add(entry_list, parent):
+            ids, seen = [], {}
             for e in entry_list:
-                counter[0] += 1
-                i = counter[0]
+                kind = ("separator" if e.get("separator")
+                        else "submenu" if e.get("children") else "item")
+                key = e.get("key") or e.get("label", "")
+                seen[(key, kind)] = n = seen.get((key, kind), 0) + 1
+                ident = (parent, key, kind, n)
+                i = used[ident] = self._id(ident)
                 props, kids = {}, []
                 if e.get("separator"):
                     props["type"] = Variant("s", "separator")
@@ -232,7 +249,7 @@ class DBusMenu(ServiceInterface):
                     if "radio" in e:
                         props["toggle-type"] = Variant("s", "radio")
                         props["toggle-state"] = Variant("i", 1 if e["radio"] else 0)
-                    kids = add(e.get("children", []))
+                    kids = add(e.get("children", []), i)
                     if kids:
                         props["children-display"] = Variant("s", "submenu")
                     if e.get("action"):
@@ -241,7 +258,8 @@ class DBusMenu(ServiceInterface):
                 ids.append(i)
             return ids
 
-        self.nodes[0] = ({"children-display": Variant("s", "submenu")}, add(entries))
+        self.nodes[0] = ({"children-display": Variant("s", "submenu")}, add(entries, 0))
+        self.ids = used                    # forget entries that are gone; ids stay unique
         self.revision += 1
         self.LayoutUpdated()
 
@@ -302,11 +320,11 @@ class DBusMenu(ServiceInterface):
 
     @method()
     def AboutToShow(self, item_id: "i") -> "b":
-        return False
+        return True                        # hosts only refresh submenus when asked to
 
     @method()
     def AboutToShowGroup(self, ids: "ai") -> "aiai":
-        return [[], []]
+        return [[i for i in ids if i in self.nodes], [i for i in ids if i not in self.nodes]]
 
     @dbus_signal()
     def LayoutUpdated(self) -> "ui":
@@ -362,8 +380,16 @@ class Tray:
             if new:
                 loop.create_task(self.connect_service())
             else:
-                self.svc, self.items, self.inputs = None, [], []
+                self.drop_service()
+                self.items, self.inputs = [], []
                 self.render()
+
+    def drop_service(self):
+        """Forget the service proxy and its signal handlers (else they pile up)."""
+        if self.svc:
+            self.svc.off_items_changed(self.on_items)
+            self.svc.off_inputs_changed(self.on_inputs)
+            self.svc = None
 
     async def register(self):
         try:
@@ -374,6 +400,7 @@ class Tray:
             print(f"grab-tray: tray host not available yet ({e})", flush=True)
 
     async def connect_service(self):
+        self.drop_service()
         try:
             intro = await self.bus.introspect(SVC_NAME, SVC_PATH)
             svc = self.bus.get_proxy_object(SVC_NAME, SVC_PATH, intro).get_interface(SVC_IFACE)
@@ -384,7 +411,7 @@ class Tray:
             self.on_items(await svc.call_list_items())
         except Exception as e:
             print(f"grab-tray: recorder service not available ({e})", flush=True)
-            self.svc = None
+            self.drop_service()
             self.render()
 
     def on_items(self, items):
@@ -483,7 +510,7 @@ class Tray:
 
         prefix = {"recording": "● ", "paused": "❚❚ ", "encoding": "… "}.get(st, "")
         return {"label": wrap2(prefix + it["title"]), "icon": STATE_ICON.get(st, ""),
-                "children": children}
+                "key": f"item:{it['id']}", "children": children}
 
     def render(self):
         entries = []
