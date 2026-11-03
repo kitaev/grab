@@ -79,6 +79,9 @@ QtObject {
     function sync(list) {
         const wanted = list.filter(it => it.group === "live")
                            .concat(list.filter(it => it.group === "finished"));
+        wanted.forEach((it, k) => {        // no separator after the last row of a section
+            it.lastInGroup = k === wanted.length - 1 || wanted[k + 1].group !== it.group;
+        });
         const ids = new Set(wanted.map(it => it.itemId));
         for (let i = items.count - 1; i >= 0; i--) {
             if (!ids.has(items.get(i).itemId))

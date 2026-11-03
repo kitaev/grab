@@ -68,7 +68,7 @@ ColumnLayout {
                 }
                 Kirigami.Separator {
                     Layout.fillWidth: true
-                    visible: entry.index < list.count - 1
+                    visible: !entry.model.lastInGroup
                     opacity: 0.5
                 }
             }
