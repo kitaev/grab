@@ -1,6 +1,8 @@
 // The popup: a Streams tab (what can be or is being recorded) and a Recordings
 // tab (finished recordings), and a footer with the recordings folder and,
-// on Recordings, a "⋮" menu to remove all of them.
+// on Recordings, a "⋮" menu to remove all of them. The tabs are in the header
+// (a PlasmoidHeading, like the Volume widget's): the system tray joins it to
+// its title row, one background without a line between them.
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
@@ -9,12 +11,12 @@ import org.kde.plasma.components as PlasmaComponents3
 import org.kde.plasma.extras as PlasmaExtras
 import org.kde.purpose as Purpose
 
-ColumnLayout {
+PlasmaExtras.Representation {
     id: view
 
     required property var recorder
 
-    spacing: 0
+    collapseMarginsHint: true
     Layout.minimumWidth: Kirigami.Units.gridUnit * 20
     Layout.preferredWidth: Kirigami.Units.gridUnit * 26
     Layout.minimumHeight: Kirigami.Units.gridUnit * 12
@@ -22,7 +24,7 @@ ColumnLayout {
     Layout.preferredHeight: Math.min(Kirigami.Units.gridUnit * 34,
                                      Math.max(Kirigami.Units.gridUnit * 12,
                                               Math.max(streamList.listHeight, recordList.listHeight)
-                                              + tabs.implicitHeight + footer.implicitHeight
+                                              + tabs.implicitHeight + folderBar.implicitHeight
                                               + Kirigami.Units.largeSpacing * 2))
 
     readonly property bool onRecords: tabs.currentIndex === 1
@@ -169,94 +171,103 @@ ColumnLayout {
         }
     }
 
-    PlasmaComponents3.TabBar {
-        id: tabs
-        objectName: "tabs"
-        Layout.fillWidth: true
+    header: PlasmaExtras.PlasmoidHeading {
+        // the tab bar reaches the heading's bottom border, as in the Volume widget
+        bottomPadding: -bottomInset
 
-        PlasmaComponents3.TabButton {
-            text: "Streams"
-        }
-        PlasmaComponents3.TabButton {
-            text: "Recordings"
-        }
-    }
+        PlasmaComponents3.TabBar {
+            id: tabs
+            objectName: "tabs"
+            anchors.fill: parent
 
-    StackLayout {
-        Layout.fillWidth: true
-        Layout.fillHeight: true
-        currentIndex: tabs.currentIndex
-
-        ItemList {
-            id: streamList
-            recorder: view.recorder
-            model: view.recorder.streams
-            placeholderIcon: view.recorder.available ? "media-record" : "dialog-warning"
-            placeholderText: view.recorder.available ? "No recordable streams" : "Recorder service not running"
-            placeholderExplanation: view.recorder.available
-                ? "Start playing audio in an application to record it."
-                : "Start it with: systemctl --user start grabd"
-        }
-
-        ItemList {
-            id: recordList
-            recorder: view.recorder
-            model: view.recorder.records
-            placeholderIcon: view.recorder.available ? "audio-x-generic" : "dialog-warning"
-            placeholderText: view.recorder.available ? "No recordings" : "Recorder service not running"
-            placeholderExplanation: view.recorder.available
-                ? "Finished recordings appear here."
-                : "Start it with: systemctl --user start grabd"
+            PlasmaComponents3.TabButton {
+                text: "Streams"
+            }
+            PlasmaComponents3.TabButton {
+                text: "Recordings"
+            }
         }
     }
 
-    Kirigami.Separator { Layout.fillWidth: true }
+    contentItem: ColumnLayout {
+        spacing: 0
 
-    RowLayout {
-        id: footer
-        Layout.fillWidth: true
-        Layout.margins: Kirigami.Units.smallSpacing
-        spacing: Kirigami.Units.smallSpacing
+        StackLayout {
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            currentIndex: tabs.currentIndex
 
-        PlasmaComponents3.ToolButton {
-            icon.name: "folder-music"
-            text: "Open Recordings Folder"
-            visible: view.recorder.folder !== ""
-            onClicked: Qt.openUrlExternally("file://" + view.recorder.folder.split("/")
-                                            .map(encodeURIComponent).join("/"))
+            ItemList {
+                id: streamList
+                recorder: view.recorder
+                model: view.recorder.streams
+                placeholderIcon: view.recorder.available ? "media-record" : "dialog-warning"
+                placeholderText: view.recorder.available ? "No recordable streams" : "Recorder service not running"
+                placeholderExplanation: view.recorder.available
+                    ? "Start playing audio in an application to record it."
+                    : "Start it with: systemctl --user start grabd"
+            }
+
+            ItemList {
+                id: recordList
+                recorder: view.recorder
+                model: view.recorder.records
+                placeholderIcon: view.recorder.available ? "audio-x-generic" : "dialog-warning"
+                placeholderText: view.recorder.available ? "No recordings" : "Recorder service not running"
+                placeholderExplanation: view.recorder.available
+                    ? "Finished recordings appear here."
+                    : "Start it with: systemctl --user start grabd"
+            }
         }
 
-        Item { Layout.fillWidth: true }
+        Kirigami.Separator { Layout.fillWidth: true }
 
-        PlasmaComponents3.ToolButton {
-            id: removeAllButton
-            objectName: "removeAllButton"
-            icon.name: "view-more-symbolic"
-            icon.width: Kirigami.Units.iconSizes.smallMedium
-            icon.height: Kirigami.Units.iconSizes.smallMedium
-            text: "Remove All"
-            display: PlasmaComponents3.AbstractButton.IconOnly
-            PlasmaComponents3.ToolTip.text: text
-            PlasmaComponents3.ToolTip.visible: hovered && !removeAllMenu.visible
-            PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
-            visible: view.onRecords
-            enabled: view.recorder.finishedCount > 0
-            checkable: true
-            checked: removeAllMenu.visible
-            onClicked: removeAllMenu.popup(removeAllButton, 0, -removeAllMenu.implicitHeight)
+        RowLayout {
+            id: folderBar
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            spacing: Kirigami.Units.smallSpacing
 
-            ShiftMenu {
-                id: removeAllMenu
-                ShiftMenuItem {
-                    text: "Remove All Entries"
-                    icon.name: "edit-clear-all"
-                    onTriggered: view.recorder.removeFinished(false)
-                }
-                ShiftMenuItem {             // Shift: delete permanently (like Dolphin)
-                    text: removeAllMenu.shift ? "Remove All Entries and Delete Files"
-                                              : "Remove All Entries and Move to Trash"
-                    icon.name: removeAllMenu.shift ? "edit-delete" : "user-trash"
-                    onTriggered: view.recorder.removeFinishedWithFiles(removeAllMenu.shift)
+            PlasmaComponents3.ToolButton {
+                icon.name: "folder-music"
+                text: "Open Recordings Folder"
+                visible: view.recorder.folder !== ""
+                onClicked: Qt.openUrlExternally("file://" + view.recorder.folder.split("/")
+                                                .map(encodeURIComponent).join("/"))
+            }
+
+            Item { Layout.fillWidth: true }
+
+            PlasmaComponents3.ToolButton {
+                id: removeAllButton
+                objectName: "removeAllButton"
+                icon.name: "view-more-symbolic"
+                icon.width: Kirigami.Units.iconSizes.smallMedium
+                icon.height: Kirigami.Units.iconSizes.smallMedium
+                text: "Remove All"
+                display: PlasmaComponents3.AbstractButton.IconOnly
+                PlasmaComponents3.ToolTip.text: text
+                PlasmaComponents3.ToolTip.visible: hovered && !removeAllMenu.visible
+                PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                visible: view.onRecords
+                enabled: view.recorder.finishedCount > 0
+                checkable: true
+                checked: removeAllMenu.visible
+                onClicked: removeAllMenu.popup(removeAllButton, 0, -removeAllMenu.implicitHeight)
+
+                ShiftMenu {
+                    id: removeAllMenu
+                    ShiftMenuItem {
+                        text: "Remove All Entries"
+                        icon.name: "edit-clear-all"
+                        onTriggered: view.recorder.removeFinished(false)
+                    }
+                    ShiftMenuItem {             // Shift: delete permanently (like Dolphin)
+                        text: removeAllMenu.shift ? "Remove All Entries and Delete Files"
+                                                  : "Remove All Entries and Move to Trash"
+                        icon.name: removeAllMenu.shift ? "edit-delete" : "user-trash"
+                        onTriggered: view.recorder.removeFinishedWithFiles(removeAllMenu.shift)
+                    }
                 }
             }
         }
