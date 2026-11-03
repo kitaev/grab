@@ -34,8 +34,9 @@ import os
 import re
 import signal
 import time
+import urllib.parse
 
-from dbus_next import BusType, Variant
+from dbus_next import BusType, Message, MessageType, Variant
 from dbus_next.aio import MessageBus
 from dbus_next.service import ServiceInterface, method
 from dbus_next.service import signal as dbus_signal
@@ -55,6 +56,10 @@ GENERIC_RE = r"^(stream|firefox|audiostream|audio stream|playback|audio|output)$
 BUS_NAME = "org.grab.Recorder"
 OBJ_PATH = "/org/grab/Recorder"
 IFACE = "org.grab.Recorder1"
+
+MPRIS_PREFIX = "org.mpris.MediaPlayer2"
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER = "org.mpris.MediaPlayer2.Player"
 
 FINISHED = ("done", "empty", "failed")
 ACTIVE = ("recording", "paused")
@@ -89,6 +94,10 @@ async def duration(path):
 def real_title(t):
     t = (t or "").strip().lower()
     return bool(t) and not re.match(GENERIC_RE, t)
+
+
+def unwrap(d):
+    return {k: (v.value if isinstance(v, Variant) else v) for k, v in d.items()}
 
 
 def fname(t):
@@ -152,7 +161,7 @@ def pair_ports(outs, ins):
 # ------------------------------------------------------------------ model
 
 class Stream:
-    def __init__(self, si):
+    def __init__(self, si, player_title=""):
         p = si.get("properties", {})
         self.idx = si["index"]
         self.node = str(p.get("object.id"))
@@ -160,14 +169,25 @@ class Stream:
         self.app = p.get("application.name", "Audio")
         self.corked = si.get("corked", False)
         self.channel_map = si.get("channel_map") or "front-left,front-right"
+        self.player_title = player_title   # from the app's MPRIS player, if any
+
+    @staticmethod
+    def pid(si):
+        return str(si.get("properties", {}).get("application.process.id", ""))
+
+    @property
+    def has_title(self):
+        return real_title(self.media) or bool(self.player_title)
 
     @property
     def title(self):
-        return self.media.strip() if real_title(self.media) else self.app
+        if real_title(self.media):
+            return self.media.strip()
+        return self.player_title or self.app
 
     @property
     def offerable(self):
-        return not self.corked or real_title(self.media)
+        return not self.corked or self.has_title
 
     @staticmethod
     def accept(si):
@@ -259,6 +279,95 @@ class EncodeQueue:
             self.idle.set()
 
 
+# ------------------------------------------------------------------ MPRIS titles
+
+class Players:
+    """Track titles from MPRIS media players, keyed by process id, for streams
+    whose media.name is generic (e.g. VLC's "audio stream")."""
+
+    def __init__(self, bus, on_change):
+        self.bus = bus
+        self.on_change = on_change
+        self.players = {}                  # bus name -> {"owner", "pid", "status", "title"}
+
+    async def _call(self, dest, path, iface, member, sig="", body=()):
+        reply = await self.bus.call(Message(destination=dest, path=path, interface=iface,
+                                            member=member, signature=sig, body=list(body)))
+        if reply.message_type == MessageType.ERROR:
+            raise RuntimeError(reply.error_name)
+        return reply.body
+
+    async def _dbus(self, member, sig="", body=()):
+        return await self._call("org.freedesktop.DBus", "/org/freedesktop/DBus",
+                                "org.freedesktop.DBus", member, sig, body)
+
+    async def start(self):
+        for rule in (
+                f"type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged',"
+                f"arg0namespace='{MPRIS_PREFIX}'",
+                f"type='signal',interface='org.freedesktop.DBus.Properties',"
+                f"member='PropertiesChanged',path='{MPRIS_PATH}',arg0='{MPRIS_PLAYER}'"):
+            await self._dbus("AddMatch", "s", [rule])
+        self.bus.add_message_handler(self._on_message)
+        (names,) = await self._dbus("ListNames")
+        for name in names:
+            if name.startswith(MPRIS_PREFIX + "."):
+                await self._update(name)
+        self.on_change()
+
+    def _on_message(self, msg):
+        if msg.message_type != MessageType.SIGNAL:
+            return None
+        loop = asyncio.get_running_loop()
+        if msg.member == "NameOwnerChanged" and msg.sender == "org.freedesktop.DBus":
+            name, _old, new = msg.body
+            if name.startswith(MPRIS_PREFIX + "."):
+                if new:
+                    loop.create_task(self._update(name, notify=True))
+                elif self.players.pop(name, None):
+                    self.on_change()
+        elif msg.member == "PropertiesChanged" and msg.path == MPRIS_PATH:
+            for name, p in list(self.players.items()):
+                if p["owner"] == msg.sender:
+                    loop.create_task(self._update(name, notify=True))
+        return None
+
+    async def _update(self, name, notify=False):
+        try:
+            (owner,) = await self._dbus("GetNameOwner", "s", [name])
+            (pid,) = await self._dbus("GetConnectionUnixProcessID", "s", [name])
+            props = "org.freedesktop.DBus.Properties"
+            (meta,) = await self._call(name, MPRIS_PATH, props, "Get", "ss",
+                                       [MPRIS_PLAYER, "Metadata"])
+            (status,) = await self._call(name, MPRIS_PATH, props, "Get", "ss",
+                                         [MPRIS_PLAYER, "PlaybackStatus"])
+        except Exception:
+            self.players.pop(name, None)
+        else:
+            self.players[name] = {"owner": owner, "pid": str(pid), "status": status.value,
+                                  "title": self._title(unwrap(meta.value))}
+        if notify:
+            self.on_change()
+
+    @staticmethod
+    def _title(meta):
+        title = (meta.get("xesam:title") or "").strip()
+        if not title and meta.get("xesam:url"):
+            path = urllib.parse.urlparse(meta["xesam:url"]).path
+            title = os.path.splitext(urllib.parse.unquote(os.path.basename(path)))[0]
+            title = re.sub(r"^\d{4}-\d\d-\d\d_\d\d-\d\d-\d\d_", "", title)  # our own files
+        artist = ", ".join(a for a in meta.get("xesam:artist") or [] if a.strip())
+        if title and artist and artist.lower() not in title.lower():
+            title = f"{artist} - {title}"
+        return title
+
+    def title_for(self, pid):
+        """Title of the process's player; prefer one that is playing."""
+        found = [p for p in self.players.values() if p["pid"] == pid and p["title"]]
+        found.sort(key=lambda p: p["status"] != "Playing")
+        return found[0]["title"] if found else ""
+
+
 # ------------------------------------------------------------------ the recorder
 
 class Recorder:
@@ -271,7 +380,16 @@ class Recorder:
         self.iface = None
         self.queue = EncodeQueue(self.encoded)
         self.stopping = False
+        self.players = None                # Players, once the bus is up
         self._emit = None
+        self._timers = {}
+
+    def later(self, key, coro_fn, delay=0.15):
+        """Run coro_fn after delay; a newer request for the same key replaces it."""
+        loop = asyncio.get_running_loop()
+        if key in self._timers:
+            self._timers[key].cancel()
+        self._timers[key] = loop.call_later(delay, lambda: loop.create_task(coro_fn()))
 
     # ---- change notification (coalesced)
 
@@ -303,7 +421,8 @@ class Recorder:
     async def refresh_streams(self):
         if self.stopping:
             return
-        streams = {si["index"]: Stream(si)
+        title_for = self.players.title_for if self.players else (lambda pid: "")
+        streams = {si["index"]: Stream(si, title_for(Stream.pid(si)))
                    for si in await pactl_json("sink-inputs") if Stream.accept(si)}
 
         for idx, item in list(self.by_stream.items()):
@@ -317,7 +436,7 @@ class Recorder:
                     asyncio.get_running_loop().create_task(self.finalize(item))
             else:
                 item.stream = s
-                if item.state == "available" or real_title(s.media):
+                if item.state == "available" or s.has_title:
                     item.title, item.app = s.title, s.app
 
         for idx, s in streams.items():
@@ -578,14 +697,6 @@ class RecorderInterface(ServiceInterface):
 # ------------------------------------------------------------------ main
 
 async def subscribe(rec):
-    loop = asyncio.get_running_loop()
-    timers = {}
-
-    def later(key, coro_fn):
-        if key in timers:
-            timers[key].cancel()
-        timers[key] = loop.call_later(0.15, lambda: loop.create_task(coro_fn()))
-
     while True:
         proc = await asyncio.create_subprocess_exec(
             "pactl", "subscribe", stdout=asyncio.subprocess.PIPE,
@@ -593,9 +704,9 @@ async def subscribe(rec):
         try:
             async for raw in proc.stdout:
                 if b"on sink-input #" in raw:
-                    later("streams", rec.refresh_streams)
+                    rec.later("streams", rec.refresh_streams)
                 elif b"on source #" in raw or b"on server" in raw:
-                    later("inputs", rec.refresh_inputs)
+                    rec.later("inputs", rec.refresh_inputs)
         finally:
             if proc.returncode is None:
                 proc.kill()
@@ -618,6 +729,11 @@ async def main():
     await bus.request_name(BUS_NAME)
 
     rec.recover_orphans()
+    rec.players = Players(bus, lambda: rec.later("streams", rec.refresh_streams))
+    try:
+        await rec.players.start()
+    except Exception as e:
+        print(f"grabd: MPRIS titles unavailable ({e})", flush=True)
     await rec.refresh_inputs()
     await rec.refresh_streams()
 
