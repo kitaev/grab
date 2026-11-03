@@ -1,8 +1,8 @@
 // Grab: system tray widget for the grabd recording service. A grey dot (red
 // while recording) opens a popup with a row per stream: record/pause, the
 // microphone to mix in, and for finished recordings Show in folder / Remove.
-// Status follows "shown when relevant": passive with nothing to show,
-// needs-attention while recording.
+// Status follows "shown when relevant": passive with nothing to show, active
+// otherwise.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -17,10 +17,10 @@ PlasmoidItem {
     readonly property bool recording: backend.recordingCount > 0
 
     Plasmoid.icon: "media-record"
-    Plasmoid.status: !backend.available ? PlasmaCore.Types.ActiveStatus
-                   : recording ? PlasmaCore.Types.NeedsAttentionStatus
-                   : backend.items.count > 0 ? PlasmaCore.Types.ActiveStatus
-                   : PlasmaCore.Types.PassiveStatus
+    // Active (not NeedsAttention) while recording: the tray animates needs-attention
+    // icons, and the red dot already says we're recording.
+    Plasmoid.status: !backend.available || recording || backend.items.count > 0
+                   ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
 
     toolTipMainText: "Grab"
     toolTipSubText: {
