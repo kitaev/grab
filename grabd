@@ -13,6 +13,10 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   SaveNow(s id)                         save an MP3 snapshot of a recording/paused item now
   SetPlaybackMuted(s id, b muted)       stop/resume playing a stream on its device; it is
                                         still recorded (see "Muted playback" below)
+  Meters(b on)                          stream level meters: on for 5 s after each call
+                                        (clients repeat it while they show levels)
+  signal Levels(s)                      while meters are on, ~15 times a second: JSON
+                                        {item id: level 0..1 (RMS)} for items with a stream
   RemoveRecord(s id)                    discard a recording/paused item's recording: stop it,
                                         move its MP3 and FLAC to the Trash; the stream is
                                         offered again
@@ -23,15 +27,13 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   signal StateChanged(s)                GetState() after any change (for clients
                                         that handle JSON more easily than variants)
 
-Item properties: id, title, app, state, busy, pending, muted, stream, stream_index, input,
+Item properties: id, title, app, state, busy, pending, muted, stream, input,
 input_description, file, duration, error.
   state:   available | recording | paused | encoding | done | empty | failed
   busy:    an MP3 snapshot/final encode is queued or running for this item
   pending: a Toggle is in progress (starting, pausing or resuming); further
            Toggles are ignored until it is done
   muted:   the stream's playback is muted (SetPlaybackMuted)
-  stream_index: the stream's PulseAudio sink-input index (-1 without a stream),
-           e.g. for a client to show its level
   error:   why the last start failed (state stays available), or for
            finished items what went wrong
 
@@ -53,6 +55,11 @@ and other streams of the same app are unaffected. Unmuting points the stream's
 target at the silent sink and then at its device (or the default output), so
 WirePlumber links it again, and finally restores the target metadata as it was.
 
+Level meters: a hidden capture (pw-record, media.class Stream/Input/Audio/
+Internal, so not listed by pipewire-pulse) linked directly to each stream's
+outputs, like the recording link: it measures what the stream produces, i.e.
+what is recorded, wherever the stream plays (muted, "Play on" moves).
+
 Metadata lives in the files' tags (ID3 in the MP3, Vorbis comments in the
 FLAC): title, date (start time), and grab=1 (the marker), grab_app,
 grab_input. MP3s in the recordings folder that carry the marker and belong to
@@ -66,10 +73,12 @@ Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, p
 Optional: python-mutagen (reads tags and removes the marker in place, in
 milliseconds; without it ffprobe reads tags and ffmpeg copies the file).
 """
+import array
 import asyncio
 import glob
 import itertools
 import json
+import math
 import os
 import re
 import signal
@@ -110,6 +119,9 @@ MIX = (f"[0:a]pan=stereo|c0=c0|c1=c1[stream];"
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
+METER_RATE = 16000         # level meters: capture rate, updates per second, lease
+METER_FPS = 15
+METER_LEASE = 5.0
 
 EXCLUDE_APP_RE = ""        # apps never offered (regex on application.name)
 EXCLUDE_ROLE_RE = r"^(event|notification)$"
@@ -443,7 +455,6 @@ class Item:
             "pending": Variant("b", self.pending),
             "muted": Variant("b", self.muted),
             "stream": Variant("b", self.stream is not None),
-            "stream_index": Variant("i", self.stream.idx if self.stream else -1),
             "input": Variant("s", self.input),
             "input_description": Variant("s", input_desc),
             "file": Variant("s", self.file),
@@ -579,6 +590,62 @@ class Players:
         return found[0]["title"] if found else ""
 
 
+# ------------------------------------------------------------------ level meters
+
+class Meter:
+    """RMS level of one stream: a hidden pw-record capture linked to its outputs."""
+    serial = itertools.count(1)
+
+    def __init__(self, rec, item):
+        self.rec, self.node_of = rec, item.stream.node
+        self.name = f"grab_meter_{item.id}_{next(Meter.serial)}"
+        self.proc, self.links = None, []
+        self._level, self._at = 0.0, -1.0
+        self.task = asyncio.get_running_loop().create_task(self._run())
+
+    def level(self, now):
+        return round(self._level, 3) if now - self._at < 0.3 else 0.0
+
+    async def _run(self):
+        props = (f"{{ node.name = {self.name} node.autoconnect = false "
+                 "media.class = Stream/Input/Audio/Internal media.name = \"Grab level meter\" "
+                 "application.name = Grab state.restore-props = false state.restore-target = false }")
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                "pw-record", "--raw", "--rate", str(METER_RATE), "--channels", "2", "--format", "s16",
+                "--latency", f"{1000 // METER_FPS}ms", "-P", props, "-",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                stdin=asyncio.subprocess.DEVNULL)
+            node = None
+            for _ in range(25):
+                nodes, _links = await pw_graph()
+                node = next((i for i, p in nodes.items() if p.get("node.name") == self.name), None)
+                if node:
+                    break
+                await asyncio.sleep(0.1)
+            if node:
+                self.links = await self.rec._link(self.node_of, node, ("FL", "FR"))
+            chunk = METER_RATE // METER_FPS * 4           # s16 stereo
+            loop = asyncio.get_running_loop()
+            while True:
+                data = await self.proc.stdout.readexactly(chunk)
+                a = array.array("h", data)
+                self._level = math.sqrt(sum(x * x for x in a) / len(a)) / 32768
+                self._at = loop.time()
+        except (asyncio.IncompleteReadError, asyncio.CancelledError):
+            pass
+        finally:
+            if self.proc and self.proc.returncode is None:
+                self.proc.terminate()
+                try:
+                    await asyncio.wait_for(self.proc.wait(), 2)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    self.proc.kill()
+
+    def stop(self):
+        self.task.cancel()
+
+
 # ------------------------------------------------------------------ the recorder
 
 class Recorder:
@@ -593,6 +660,9 @@ class Recorder:
         self.stopping = False
         self.players = None                # Players, once the bus is up
         self.silent_module = None          # grab_silent, while any playback is muted
+        self.meters = {}                   # item -> Meter, while meters are on
+        self.meters_until = 0.0            # Meters() lease
+        self.meter_task = None
         self._emit = None
         self._timers = {}
 
@@ -879,6 +949,35 @@ class Recorder:
         for item in list(self.items.values()):
             await self.remove(item, with_data)
 
+    # ---- level meters
+
+    def keep_meters(self, on):
+        loop = asyncio.get_running_loop()
+        self.meters_until = loop.time() + METER_LEASE if on else 0.0
+        if on and not self.meter_task:
+            self.meter_task = loop.create_task(self._meter_loop())
+
+    async def _meter_loop(self):
+        loop = asyncio.get_running_loop()
+        try:
+            while loop.time() < self.meters_until and not self.stopping:
+                wanted = {i for i in self.items.values() if i.stream and i.state not in FINISHED}
+                for item in list(self.meters):
+                    if item not in wanted or self.meters[item].node_of != item.stream.node:
+                        self.meters.pop(item).stop()
+                for item in wanted - set(self.meters):
+                    self.meters[item] = Meter(self, item)
+                now = loop.time()
+                self.iface.Levels({i.id: m.level(now) for i, m in self.meters.items()})
+                await asyncio.sleep(1 / METER_FPS)
+        finally:
+            for m in self.meters.values():
+                m.stop()
+            self.meters.clear()
+            self.meter_task = None
+            if self.iface:
+                self.iface.Levels({})
+
     # ---- muted playback
 
     async def _silent_sink(self):
@@ -910,12 +1009,14 @@ class Recorder:
                 if not item.silent_links:
                     item.error = "could not mute playback"
                 else:
-                    # drop the links to the playback device; keep ours (recording, silent)
+                    # cut the links to the playback device only: not ours (grab_*
+                    # sinks) nor other consumers of the stream (level meters, ...)
                     nodes, links = await pw_graph()
-                    keep = {str(item.sink_node), str(silent)}
                     item.playback_node = None
                     for onode, oport, inode, iport in links:
-                        if onode == str(s.node) and inode not in keep:
+                        p = nodes.get(inode, {})
+                        if (onode == str(s.node) and p.get("media.class", "").startswith("Audio/Sink")
+                                and not p.get("node.name", "").startswith("grab_")):
                             item.playback_node = inode
                             await run("pw-link", "-d", oport, iport)
                     item.muted = True
@@ -1075,6 +1176,7 @@ class Recorder:
         if self.stopping:
             return
         self.stopping = True
+        self.meters_until = 0.0
         for item in [i for i in self.items.values() if i.muted]:
             await self.set_playback_muted(item, False)
         await asyncio.gather(*(self.finalize(i) for i in list(self.items.values())
@@ -1130,6 +1232,14 @@ class RecorderInterface(ServiceInterface):
         item = self._item(item_id)
         if item:
             self.rec.save_now(item)
+
+    @method()
+    def Meters(self, on: "b"):
+        self.rec.keep_meters(on)
+
+    @dbus_signal()
+    def Levels(self, levels) -> "s":
+        return json.dumps(levels)
 
     @method()
     def SetPlaybackMuted(self, item_id: "s", muted: "b"):

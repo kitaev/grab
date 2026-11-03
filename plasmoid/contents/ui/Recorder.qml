@@ -2,7 +2,6 @@
 // `streams` and `records` (ListModels updated in place, so open popups in
 // delegates survive updates) and `inputs`, and wraps its methods.
 import QtQuick
-import org.kde.plasma.private.volume as PA
 import org.kde.plasma.workspace.dbus as DBus
 
 QtObject {
@@ -19,28 +18,21 @@ QtObject {
     property var inputs: []                // [{name, description, default}]
     property string folder: ""             // grabd's recordings folder
 
-    // Level meters (see ItemRow): Plasma's own stream objects by sink-input
-    // index, from the volume applet's (private) module. Only while `monitoring`.
+    // Level meters (see ItemRow): grabd measures each stream at its outputs
+    // while `monitoring` (the popup is open) and sends {item id: level}.
     property bool monitoring: false
-    property var sinkInputs: ({})          // index -> PulseObject
-    readonly property var sinkInputModel: PA.SinkInputModel {}
-    readonly property var sinkInputWatch: Instantiator {
-        model: rec.sinkInputModel
-        delegate: QtObject {
-            required property var model    // roles Index, PulseObject
-            readonly property int index_: model.Index
-            readonly property var object_: model.PulseObject
-        }
-        onObjectAdded: (i, o) => {
-            const m = Object.assign({}, rec.sinkInputs);
-            m[o.index_] = o.object_;
-            rec.sinkInputs = m;
-        }
-        onObjectRemoved: (i, o) => {
-            const m = Object.assign({}, rec.sinkInputs);
-            delete m[o.index_];
-            rec.sinkInputs = m;
-        }
+    property var levels: ({})
+    onMonitoringChanged: {
+        if (available)                     // else: requested once grabd appears
+            call("Meters", [monitoring]);
+        if (!monitoring)
+            levels = {};
+    }
+    readonly property var meterLease: Timer {   // grabd stops meters 5 s after the last call
+        interval: 2000
+        repeat: true
+        running: rec.monitoring && rec.available
+        onTriggered: rec.call("Meters", [true])
     }
     property int recordingCount: 0
     property int finishedCount: 0
@@ -145,7 +137,15 @@ QtObject {
     readonly property var watcher: DBus.DBusServiceWatcher {
         busType: DBus.BusType.Session
         watchedService: rec.service
-        onRegisteredChanged: registered ? rec.refresh() : rec.clear()
+        onRegisteredChanged: {
+            if (registered) {
+                rec.refresh();
+                if (rec.monitoring)            // grabd (re)started while the popup is open
+                    rec.call("Meters", [true]);
+            } else {
+                rec.clear();
+            }
+        }
     }
 
     readonly property var signals: DBus.SignalWatcher {
@@ -155,6 +155,10 @@ QtObject {
         iface: rec.iface
         function dbusStateChanged(json) {
             rec.apply(String(rec.plain(json)));
+        }
+        function dbusLevels(json) {
+            if (rec.monitoring)
+                rec.levels = JSON.parse(String(rec.plain(json)));
         }
     }
 

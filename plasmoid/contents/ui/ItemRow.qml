@@ -7,7 +7,6 @@ import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents3
-import org.kde.plasma.private.volume as PA
 import org.kde.plasma.workspace.dbus as DBus
 
 Item {
@@ -22,7 +21,6 @@ Item {
     required property bool busy
     required property bool pending
     required property bool muted
-    required property int stream_index
     required property bool stream
     required property string input
     required property string input_description
@@ -274,7 +272,8 @@ Item {
                 Item {                     // the stream's level: blue while recording, else gray
                     id: levelBar
                     objectName: "levelBar"
-                    readonly property real value: meter.volume
+                    // measured by grabd at the stream's outputs: what gets recorded
+                    readonly property real value: row.recorder.levels[row.itemId] ?? 0
                     Layout.fillWidth: true
                     Layout.topMargin: Kirigami.Units.smallSpacing
                     implicitHeight: Math.round(Kirigami.Units.smallSpacing * 1.5)
@@ -296,12 +295,6 @@ Item {
                         Behavior on width {
                             NumberAnimation { duration: Kirigami.Units.shortDuration; easing.type: Easing.OutQuad }
                         }
-                    }
-
-                    PA.VolumeMonitor {
-                        id: meter
-                        target: row.recorder.monitoring && levelBar.visible
-                                ? (row.recorder.sinkInputs[row.stream_index] ?? null) : null
                     }
                 }
             }
