@@ -271,17 +271,31 @@ Item {
                     font.weight: row.itemState === "recording" ? Font.DemiBold : Font.Normal
                 }
 
-                PlasmaComponents3.ProgressBar {    // the stream's level, like the volume applet's
+                Item {                     // the stream's level: blue while recording, else gray
                     id: levelBar
                     objectName: "levelBar"
+                    readonly property real value: meter.volume
                     Layout.fillWidth: true
                     Layout.topMargin: Kirigami.Units.smallSpacing
+                    implicitHeight: Math.round(Kirigami.Units.smallSpacing * 1.5)
                     visible: !row.finished && row.stream
-                    from: 0
-                    to: 1
-                    value: meter.volume
-                    Behavior on value {
-                        NumberAnimation { duration: Kirigami.Units.shortDuration; easing.type: Easing.OutQuad }
+
+                    Rectangle {                // track
+                        anchors.fill: parent
+                        radius: height / 2
+                        color: Kirigami.Theme.textColor
+                        opacity: 0.15
+                    }
+                    Rectangle {                // level
+                        objectName: "levelFill"
+                        height: parent.height
+                        width: parent.width * Math.min(1, levelBar.value)
+                        radius: height / 2
+                        color: row.itemState === "recording" ? Kirigami.Theme.highlightColor
+                                                             : Kirigami.Theme.disabledTextColor
+                        Behavior on width {
+                            NumberAnimation { duration: Kirigami.Units.shortDuration; easing.type: Easing.OutQuad }
+                        }
                     }
 
                     PA.VolumeMonitor {
