@@ -28,7 +28,7 @@ To build the package you also need git and `base-devel` (for makepkg).
 ## Build
 
 ```sh
-git clone <this repository> grab
+git clone https://github.com/kitaev/grab.git
 cd grab
 ./build.sh
 ```

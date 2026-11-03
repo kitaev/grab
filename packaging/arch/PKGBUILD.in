@@ -5,6 +5,7 @@ pkgver=@PKGVER@
 pkgrel=1
 pkgdesc="Record what applications play (PipeWire), with a KDE Plasma system tray widget"
 arch=('any')
+url='https://github.com/kitaev/grab'
 license=('GPL-3.0-or-later')
 depends=(
     'python' 'python-dbus-next'
