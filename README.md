@@ -5,6 +5,11 @@ call — on a KDE Plasma 6 desktop with PipeWire. Pick a stream in the system
 tray widget and press record; you can mix in a microphone, pause and resume,
 and silence the playback while it keeps recording. Recordings are saved as MP3.
 
+<p align="center">
+  <img src="docs/streams.png" width="420" alt="The Streams tab: one stream recording with a microphone mixed in, one paused with playback muted, one ready to record">
+  <img src="docs/recordings.png" width="420" alt="The Recordings tab: three finished recordings">
+</p>
+
 It has two parts:
 
 - **grabd**: a Python service that runs in your session. It finds the playing
