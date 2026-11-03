@@ -1,4 +1,4 @@
-// Settings page: grabd's own settings (recordings folder, Trash or delete),
+// Settings page: grabd's own settings (the recordings folder),
 // read and written over D-Bus (GetSettings/SetSettings), not the widget's
 // configuration. The dialog's Apply/OK call saveConfig(); unsavedChanges
 // enables Apply.
@@ -21,7 +21,7 @@ KCM.SimpleKCM {
     readonly property string savedFolder: saved ? (saved.folder || saved.default_folder) : ""
     readonly property string folder: folderField.text.trim().replace(/(.)\/+$/, "$1")
     readonly property bool unsavedChanges: saved !== null
-        && (folder !== savedFolder || trashButton.checked !== saved.trash)
+        && folder !== savedFolder
 
     function plain(v) {
         return v !== null && typeof v === "object" && v.value !== undefined ? v.value : v;
@@ -38,7 +38,6 @@ KCM.SimpleKCM {
     function show(settings) {
         saved = settings;
         folderField.text = saved.folder || saved.default_folder;
-        (saved.trash ? trashButton : deleteButton).checked = true;
     }
 
     function load() {
@@ -49,8 +48,7 @@ KCM.SimpleKCM {
     function saveConfig() {
         if (!saved)
             return;
-        const changes = {folder: folder === defaultFolder ? "" : folder,
-                         trash: trashButton.checked};
+        const changes = {folder: folder === defaultFolder ? "" : folder};
         saved = Object.assign({}, saved, changes);  // Apply turns off until grabd answers
         call("SetSettings", [JSON.stringify(changes)],
              () => { error = ""; load(); },
@@ -115,29 +113,7 @@ KCM.SimpleKCM {
             opacity: 0.7
         }
 
-        Item { Kirigami.FormData.isSection: true }
-
-        QQC2.RadioButton {
-            id: trashButton
-            Kirigami.FormData.label: "Removed recordings:"
-            text: "Move to Trash"
-            QQC2.ButtonGroup.group: removeGroup
-        }
-        QQC2.RadioButton {
-            id: deleteButton
-            text: "Delete permanently"
-            QQC2.ButtonGroup.group: removeGroup
-        }
-        QQC2.Label {
-            Layout.fillWidth: true
-            text: "Applies when a menu item removes a recording's files."
-            wrapMode: Text.Wrap
-            font: Kirigami.Theme.smallFont
-            opacity: 0.7
-        }
     }
-
-    QQC2.ButtonGroup { id: removeGroup }
 
     FolderDialog {
         id: folderDialog

@@ -17,8 +17,6 @@ QtObject {
     readonly property int count: streams.count + records.count
     property var inputs: []                // [{name, description, default}]
     property string folder: ""             // grabd's recordings folder
-    property bool trash: true              // grabd's "trash" setting: removed files go to the
-                                           // Trash (true) or are deleted (false)
 
     // Level meters (see ItemRow): grabd measures each stream at its outputs
     // while `monitoring` (the popup is open) and sends {item id: level}.
@@ -62,15 +60,6 @@ QtObject {
 
     function refresh() {
         call("GetState", [], reply => apply(String(plain(reply.value))));
-        call("GetSettings", [], reply => applySettings(String(plain(reply.value))));
-    }
-
-    function applySettings(json) {
-        try {
-            trash = JSON.parse(json).trash !== false;
-        } catch (e) {
-            console.warn("grab: bad settings", e);
-        }
     }
 
     function toggle(id) { call("Toggle", [id]); }
@@ -82,33 +71,33 @@ QtObject {
     function setEchoCancel(id, on) { call("SetEchoCancel", [id, on]); }
     function removeRecord(id) { call("RemoveRecord", [id]); }
 
-    // Removing files: right away when they go to the Trash; when they are
-    // deleted for good, after confirmRequested (FullView asks) calls proceed.
+    // Removing files: to the Trash right away; deleted permanently (Shift held,
+    // see ShiftMenu) after confirmRequested (FullView asks) calls proceed.
     signal confirmRequested(string title, string message, string action, var proceed)
 
-    function discardRecording(id, title) {
-        if (trash)
+    function discardRecording(id, title, permanently) {
+        if (!permanently)
             removeRecord(id);
         else
             confirmRequested("Delete Recording?",
                              `The recording of “${title}” will be stopped and deleted permanently.`,
-                             "Delete", () => removeRecord(id));
+                             "Delete", () => call("DeleteRecord", [id]));
     }
-    function removeWithFile(id, title) {
-        if (trash)
+    function removeWithFile(id, title, permanently) {
+        if (!permanently)
             remove(id, true);
         else
             confirmRequested("Delete File?", `“${title}” will be deleted permanently.`,
-                             "Delete", () => remove(id, true));
+                             "Delete", () => call("Delete", [id]));
     }
-    function removeFinishedWithFiles() {
+    function removeFinishedWithFiles(permanently) {
         const n = finishedCount;
-        if (trash)
+        if (!permanently)
             removeFinished(true);
         else
             confirmRequested("Delete Files?",
                              `${n === 1 ? "The recording" : `All ${n} recordings`} in the list will be deleted permanently.`,
-                             "Delete All", () => removeFinished(true));
+                             "Delete All", () => call("DeleteFinished", []));
     }
 
     function apply(json) {
@@ -198,9 +187,6 @@ QtObject {
         iface: rec.iface
         function dbusStateChanged(json) {
             rec.apply(String(rec.plain(json)));
-        }
-        function dbusSettingsChanged(json) {
-            rec.applySettings(String(rec.plain(json)));
         }
         function dbusLevels(json) {
             if (rec.monitoring)

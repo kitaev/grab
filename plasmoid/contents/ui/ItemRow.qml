@@ -1,8 +1,8 @@
 // One grabd item: the status line, then record/pause (or, for a recording, a
 // file icon) left of the title and a "⋮" actions menu on the right. Streams'
 // menu: Microphone (the input mixed in), Save Now, Show in Folder, Move to
-// Trash or Delete Recording; recordings': Show in Folder, Remove Entry (and Move
-// to Trash or Delete File, per the "trash" setting). The status
+// Trash; recordings': Show in Folder, Remove Entry (and Move to Trash). With
+// Shift held the Trash items delete permanently (ShiftMenu). The status
 // line names the selected input.
 import QtQuick
 import QtQuick.Layouts
@@ -364,7 +364,7 @@ Item {
                 PlasmaComponents3.ToolTip.visible: hovered && !menu.visible
                 PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
 
-                PlasmaComponents3.Menu {
+                ShiftMenu {
                     id: streamMenu
                     objectName: "streamMenu"
 
@@ -404,7 +404,7 @@ Item {
                             }
                         }
                     }
-                    PlasmaComponents3.MenuItem {
+                    ShiftMenuItem {
                         objectName: "mutePlayback"
                         text: "Mute Playback"
                         icon.name: "audio-volume-muted"
@@ -416,49 +416,49 @@ Item {
                             checked = Qt.binding(() => row.muted);   // grabd's state decides
                         }
                     }
-                    PlasmaComponents3.MenuItem {
+                    ShiftMenuItem {
                         objectName: "saveNow"
                         text: "Save Now"
                         icon.name: "document-save"
                         enabled: row.active && !row.busy && !row.toggling
                         onTriggered: row.recorder.saveNow(row.itemId)
                     }
-                    PlasmaComponents3.MenuItem {
+                    ShiftMenuItem {
                         text: "Show in Folder"
                         icon.name: "folder-open"
                         enabled: row.file !== ""
                         onTriggered: row.showInFolder()
                     }
                     PlasmaComponents3.MenuSeparator {}
-                    PlasmaComponents3.MenuItem {
+                    ShiftMenuItem {         // Shift: delete permanently (like Dolphin)
                         objectName: "removeRecord"
-                        text: row.recorder.trash ? "Move Recording to Trash" : "Delete Recording"
-                        icon.name: row.recorder.trash ? "user-trash" : "edit-delete"
+                        text: streamMenu.shift ? "Delete Recording" : "Move Recording to Trash"
+                        icon.name: streamMenu.shift ? "edit-delete" : "user-trash"
                         enabled: row.file !== "" && row.active && !row.toggling
-                        onTriggered: row.recorder.discardRecording(row.itemId, row.title)
+                        onTriggered: row.recorder.discardRecording(row.itemId, row.title, streamMenu.shift)
                     }
                 }
 
-                PlasmaComponents3.Menu {
+                ShiftMenu {
                     id: moreMenu
                     objectName: "moreMenu"
-                    PlasmaComponents3.MenuItem {
+                    ShiftMenuItem {
                         text: "Show in Folder"
                         icon.name: "folder-open"
                         enabled: row.file !== ""
                         onTriggered: row.showInFolder()
                     }
                     PlasmaComponents3.MenuSeparator {}
-                    PlasmaComponents3.MenuItem {
+                    ShiftMenuItem {
                         text: "Remove Entry"
                         icon.name: "edit-clear"
                         onTriggered: row.recorder.remove(row.itemId, false)
                     }
-                    PlasmaComponents3.MenuItem {
-                        text: row.recorder.trash ? "Remove Entry and Move to Trash"
-                                                 : "Remove Entry and Delete File"
-                        icon.name: row.recorder.trash ? "user-trash" : "edit-delete"
-                        onTriggered: row.recorder.removeWithFile(row.itemId, row.title)
+                    ShiftMenuItem {         // Shift: delete permanently (like Dolphin)
+                        text: moreMenu.shift ? "Remove Entry and Delete File"
+                                             : "Remove Entry and Move to Trash"
+                        icon.name: moreMenu.shift ? "edit-delete" : "user-trash"
+                        onTriggered: row.recorder.removeWithFile(row.itemId, row.title, moreMenu.shift)
                     }
                 }
             }

@@ -101,21 +101,26 @@ D-Bus, your Music folder and your Trash.
 ## Settings
 
 Right-click the tray icon and choose **Configure Record What's Playing…**.
-There are two settings:
 
-- **Save recordings in:** the folder for new recordings. By default this is
-  `grab/` inside your XDG music folder (`XDG_MUSIC_DIR` in
-  `~/.config/user-dirs.dirs`), usually `~/Music/grab`. Recordings already made
-  stay where they are, and the list shows the recordings in the chosen folder.
-- **Removed recordings:** move them to the Trash (the default) or delete them
-  permanently. This applies to every menu item that removes a recording's
-  files, and their labels say which one happens ("Remove Entry and Move to
-  Trash" or "Remove Entry and Delete File"). Permanent deletes ask for
-  confirmation first.
+**Save recordings in** is the folder for new recordings. By default this is
+`grab/` inside your XDG music folder (`XDG_MUSIC_DIR` in
+`~/.config/user-dirs.dirs`), usually `~/Music/grab`. Recordings already made
+stay where they are, and the list shows the recordings in the chosen folder.
 
-grabd keeps these settings itself, in `~/.config/grabd/settings.json`, so they
-are the same for every copy of the widget. Setting `GRAB_OUTDIR` in the unit's
+grabd keeps this setting itself, in `~/.config/grabd/settings.json`, so it
+is the same for every copy of the widget. Setting `GRAB_OUTDIR` in the unit's
 environment (`systemctl --user edit grabd`) changes the default folder.
+
+## Removing recordings
+
+The "⋮" menus move a recording's files to the Trash: *Move Recording to
+Trash*, *Remove Entry and Move to Trash* and *Remove All Entries and Move to
+Trash*. Hold **Shift** while the menu is open, as in Dolphin, and these items
+change to delete the files permanently instead. Permanent deletes ask for
+confirmation first. *Remove Entry* takes a recording off the list and keeps
+its file.
+
+## How recordings are stored
 
 While a stream is recording, grabd writes a hidden `.<name>.flac` file. The
 MP3 is encoded from it when the recording is stopped or saved. The title,

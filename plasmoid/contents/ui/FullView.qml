@@ -142,18 +142,18 @@ ColumnLayout {
             checked: removeAllMenu.visible
             onClicked: removeAllMenu.popup(removeAllButton, 0, -removeAllMenu.implicitHeight)
 
-            PlasmaComponents3.Menu {
+            ShiftMenu {
                 id: removeAllMenu
-                PlasmaComponents3.MenuItem {
+                ShiftMenuItem {
                     text: "Remove All Entries"
                     icon.name: "edit-clear-all"
                     onTriggered: view.recorder.removeFinished(false)
                 }
-                PlasmaComponents3.MenuItem {
-                    text: view.recorder.trash ? "Remove All Entries and Move to Trash"
-                                              : "Remove All Entries and Delete Files"
-                    icon.name: view.recorder.trash ? "user-trash" : "edit-delete"
-                    onTriggered: view.recorder.removeFinishedWithFiles()
+                ShiftMenuItem {             // Shift: delete permanently (like Dolphin)
+                    text: removeAllMenu.shift ? "Remove All Entries and Delete Files"
+                                              : "Remove All Entries and Move to Trash"
+                    icon.name: removeAllMenu.shift ? "edit-delete" : "user-trash"
+                    onTriggered: view.recorder.removeFinishedWithFiles(removeAllMenu.shift)
                 }
             }
         }
