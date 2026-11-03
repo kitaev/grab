@@ -12,8 +12,8 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   RemoveFinished(b with_data)           Remove() every finished item
   SaveNow(s id)                         save an MP3 snapshot of a recording/paused item now
   RemoveRecord(s id)                    discard a recording/paused item's recording: stop it,
-                                        move its MP3, metadata and FLAC to the Trash; the
-                                        stream is offered again
+                                        move its MP3 and FLAC to the Trash; the stream is
+                                        offered again
   signal ItemsChanged(a(sa{sv}))        full item list after any change
   signal InputsChanged(a(ssb))          full input list after any change
   GetState()             -> s          JSON {"items": [{properties}], "inputs":
@@ -41,14 +41,14 @@ snapshot; resume relinks and appends. When the stream disappears the item is
 finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
 
-Each saved MP3 gets a metadata file next to it (same name, .json: title, app,
-start time, duration, input). MP3s in the recordings folder that have one and
-belong to no item (earlier sessions) are listed as done items; MP3s without
-one are not listed. Removing a finished item deletes its metadata file and
-keeps the MP3; removing it with data moves the MP3, metadata and any leftover
-FLAC to the Trash (restoring them brings the item back). Items disappear when
-their MP3 or metadata file is deleted, and metadata files whose MP3 is gone
-are removed.
+Metadata lives in the files' tags (ID3 in the MP3, Vorbis comments in the
+FLAC): title, date (start time), and grab=1 (the marker), grab_app,
+grab_input. MP3s in the recordings folder that carry the marker and belong to
+no item (earlier sessions) are listed as done items; others are not listed.
+Removing a finished item strips the marker (a lossless copy of the MP3) and
+keeps the MP3; removing it with data moves the MP3 and any leftover FLAC to
+the Trash (restoring them brings the item back). Items disappear when their
+MP3 is deleted or loses the marker.
 
 Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
 """
@@ -122,13 +122,26 @@ async def pactl_json(kind):
         return []
 
 
-async def duration(path):
-    rc, out = await run("ffprobe", "-v", "error", "-show_entries", "format=duration",
-                        "-of", "csv=p=0", path)
+async def probe(path):
+    """{"duration": seconds, "tags": {lower-case key: value}} via ffprobe, or None."""
+    rc, out = await run("ffprobe", "-v", "error", "-show_entries", "format=duration:format_tags",
+                        "-of", "json", path)
     try:
-        return float(out.strip())
+        fmt = json.loads(out)["format"] if rc == 0 else None
+    except (ValueError, KeyError):
+        return None
+    if fmt is None:
+        return None
+    try:
+        dur = float(fmt.get("duration", 0))
     except ValueError:
-        return 0.0
+        dur = 0.0
+    return {"duration": dur, "tags": {k.lower(): v for k, v in fmt.get("tags", {}).items()}}
+
+
+async def duration(path):
+    info = await probe(path)
+    return info["duration"] if info else 0.0
 
 
 def real_title(t):
@@ -140,38 +153,53 @@ def unwrap(d):
     return {k: (v.value if isinstance(v, Variant) else v) for k, v in d.items()}
 
 
-def meta_path(mp3):
-    return os.path.splitext(mp3)[0] + ".json"
+# ---- metadata in tags
+
+def tag_args(meta):
+    """ffmpeg -metadata arguments for {"title", "app", "started", "input"}."""
+    tags = {"title": meta.get("title"), "date": meta.get("started"), "grab": "1",
+            "grab_app": meta.get("app"), "grab_input": meta.get("input")}
+    return [a for k, v in tags.items() if v for a in ("-metadata", f"{k}={v}")]
 
 
-def read_meta(mp3):
-    """The recording's metadata, or None if it has no (valid) metadata file."""
+_tag_cache = {}                            # path -> ((mtime_ns, size), meta or None)
+
+
+async def read_tags(path):
+    """The recording's metadata from its tags ({"title", "app", "started",
+    "input", "duration"}), or None if it isn't marked as ours. Cached until the
+    file changes."""
     try:
-        with open(meta_path(mp3)) as f:
-            meta = json.load(f)
-    except (OSError, ValueError):
+        st = os.stat(path)
+    except OSError:
+        _tag_cache.pop(path, None)
         return None
-    return meta if isinstance(meta, dict) and meta.get("grab") == 1 else None
+    key = (st.st_mtime_ns, st.st_size)
+    cached = _tag_cache.get(path)
+    if cached and cached[0] == key:
+        return cached[1]
+    info = await probe(path)
+    tags = info["tags"] if info else {}
+    meta = None
+    if tags.get("grab") == "1":
+        meta = {"title": tags.get("title", ""), "app": tags.get("grab_app", ""),
+                "started": tags.get("date", ""), "input": tags.get("grab_input", ""),
+                "duration": info["duration"]}
+    _tag_cache[path] = (key, meta)
+    return meta
 
 
-def write_meta(mp3, meta):
-    path = meta_path(mp3)
-    tmp = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".tmp")
-    try:
-        with open(tmp, "w") as f:
-            json.dump({"grab": 1, **meta}, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except OSError as e:
-        print(f"grabd: could not write {path} ({e})", flush=True)
-
-
-def remove_meta(mp3):
-    try:
-        os.remove(meta_path(mp3))
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        print(f"grabd: could not remove {meta_path(mp3)} ({e})", flush=True)
+async def unmark(mp3):
+    """Strip our marker tag from an MP3 (lossless copy, then replace). True if done."""
+    tmp = os.path.join(os.path.dirname(mp3), "." + os.path.basename(mp3) + ".tmp.mp3")
+    rc, _ = await run("ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", mp3,
+                      "-map", "0", "-c", "copy", "-map_metadata", "0", "-metadata", "grab=", tmp)
+    if rc != 0:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        return False
+    os.replace(tmp, mp3)
+    return True
 
 
 def fname(t):
@@ -179,12 +207,14 @@ def fname(t):
     return t[:120] or "audio"
 
 
-async def encode_snapshot(flac, mp3):
-    """flac -> mp3, atomically replacing mp3. Returns (ok, saved, seconds)."""
+async def encode_snapshot(flac, mp3, meta):
+    """flac -> mp3 tagged with meta, atomically replacing mp3.
+    Returns (ok, saved, seconds)."""
     if not os.path.exists(flac):
         return True, False, 0.0
     tmp = os.path.join(os.path.dirname(mp3), "." + os.path.basename(mp3) + ".tmp.mp3")
     rc, _ = await run("ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", flac,
+                      "-map_metadata", "-1", *tag_args(meta),
                       "-c:a", "libmp3lame", "-q:a", "0", tmp)
     if rc != 0:
         if os.path.exists(tmp):
@@ -338,7 +368,8 @@ class Item:
 class EncodeQueue:
     """One worker for all items; requests are coalesced per item."""
 
-    def __init__(self, on_done):
+    def __init__(self, on_done, tags_for):
+        self.tags_for = tags_for           # item -> metadata to tag the MP3 with
         self.pending = {}                  # item -> final? (insertion ordered)
         self.current = None
         self.wake = asyncio.Event()
@@ -363,7 +394,7 @@ class EncodeQueue:
                 item, final = next(iter(self.pending.items()))
                 del self.pending[item]
                 self.current = item
-                ok, saved, sec = await encode_snapshot(item.flac, item.mp3)
+                ok, saved, sec = await encode_snapshot(item.flac, item.mp3, self.tags_for(item))
                 self.current = None
                 item.busy = item in self.pending
                 await self.on_done(item, final, ok, saved, sec)
@@ -469,7 +500,7 @@ class Recorder:
         self.default_source = ""
         self.counter = itertools.count(1)
         self.iface = None
-        self.queue = EncodeQueue(self.encoded)
+        self.queue = EncodeQueue(self.encoded, self.tags_for)
         self.stopping = False
         self.players = None                # Players, once the bus is up
         self._emit = None
@@ -506,6 +537,11 @@ class Recorder:
 
     def input_list(self):
         return [[n, d, n == self.default_source] for n, d, _node in self.sources]
+
+    def tags_for(self, item):
+        """Metadata for an item's files: title, app, start time, input."""
+        inp = item.input_desc or (self.input_description(item.input) if item.input else "")
+        return {"title": item.title, "app": item.app, "started": item.started, "input": inp}
 
     def input_description(self, inp):
         if inp == "default":
@@ -678,7 +714,8 @@ class Recorder:
             "ffmpeg", "-nostdin", "-loglevel", "error",
             "-f", "pulse", "-channels", "4", "-name", "Grab", "-stream_name", f"Grab: {item.title}",
             "-i", f"{item.sink}.monitor",
-            "-filter_complex", MIX, "-c:a", "flac", "-flush_packets", "1", item.flac,
+            "-filter_complex", MIX, *tag_args(self.tags_for(item)),
+            "-c:a", "flac", "-flush_packets", "1", item.flac,
             stdin=asyncio.subprocess.DEVNULL)
         item.stream_links = (await self._link(s.node, item.sink_node, STREAM_CH)
                              if item.sink_node else [])
@@ -730,16 +767,17 @@ class Recorder:
                 return
             mp3 = item.file or item.mp3
             if with_data:
-                paths = list(dict.fromkeys(
-                    p for p in (mp3, mp3 and meta_path(mp3), item.flac) if p and os.path.exists(p)))
+                paths = list(dict.fromkeys(p for p in (mp3, item.flac) if p and os.path.exists(p)))
                 if paths:
                     rc, _ = await run("gio", "trash", "--", *paths)
                     if rc != 0:
                         item.error = "could not move the files to the Trash"
                         self.changed()
                         return
-            elif mp3:
-                remove_meta(mp3)
+            elif mp3 and os.path.exists(mp3) and not await unmark(mp3):
+                item.error = "could not update the MP3's tags"
+                self.changed()
+                return
             self.items.pop(item.id, None)
             self.changed()
 
@@ -767,7 +805,7 @@ class Recorder:
                     await asyncio.sleep(0.1)
                 item.busy = False
                 mp3 = item.mp3
-                paths = [p for p in (mp3, mp3 and meta_path(mp3), item.flac) if p and os.path.exists(p)]
+                paths = [p for p in (mp3, item.flac) if p and os.path.exists(p)]
                 if paths:
                     rc, _ = await run("gio", "trash", "--", *paths)
                     if rc != 0:
@@ -786,55 +824,48 @@ class Recorder:
     # ---- files in the recordings folder
 
     async def scan_files(self):
-        """List MP3s that have metadata and no item as done items; drop done
-        items whose MP3 or metadata is gone; remove metadata of deleted MP3s."""
+        """List MP3s that carry our marker and belong to no item as done items;
+        drop done items whose MP3 is gone or lost the marker."""
         if self.stopping:
             return
         try:
             names = os.listdir(OUTDIR)
         except OSError:
             return                         # don't take an unreadable folder for an empty one
-        visible = [n for n in names if not n.startswith(".")]
-        present = {os.path.join(OUTDIR, n) for n in visible if n.endswith(".mp3")}
-        described = {p for p in present if os.path.exists(meta_path(p))}
+        present = sorted(os.path.join(OUTDIR, n) for n in names
+                         if n.endswith(".mp3") and not n.startswith("."))
+        metas = {}
+        for path in present:               # ffprobe only for new or changed files
+            meta = await read_tags(path)
+            if meta is not None:
+                metas[path] = meta
+        for path in [p for p in _tag_cache if p not in present]:
+            del _tag_cache[path]
         changed = False
 
         for item in list(self.items.values()):
-            if item.state == "done" and item.file not in described:
+            if item.state == "done" and item.file not in metas:
                 self.items.pop(item.id, None)
                 changed = True
 
         owned = {p for i in self.items.values() for p in (i.mp3, i.file) if p}
-        for path in sorted(described - owned):
-            meta = read_meta(path)
-            if meta is None:
+        for path, meta in metas.items():
+            if path in owned:
                 continue
-            title = meta.get("title") or re.sub(TIMESTAMP_RE, "", os.path.basename(path)[:-4])
-            item = Item(title=title or "audio", app=meta.get("app", ""))
+            title = meta["title"] or re.sub(TIMESTAMP_RE, "", os.path.basename(path)[:-4])
+            item = Item(title=title or "audio", app=meta["app"])
             item.state, item.file, item.mp3 = "done", path, path
-            item.started = meta.get("started", "")
-            item.duration = meta.get("duration") or await duration(path)
-            if any(path in (i.mp3, i.file) for i in self.items.values()):
-                continue                   # an item claimed it meanwhile
+            item.started, item.duration = meta["started"], meta["duration"]
             self.items[item.id] = item
             changed = True
-
-        for n in visible:                  # metadata whose MP3 was deleted
-            if n.endswith(".json"):
-                mp3 = os.path.join(OUTDIR, n[:-5] + ".mp3")
-                if mp3 not in present and read_meta(mp3) is not None:
-                    remove_meta(mp3)
         if changed:
             self.changed()
 
     # ---- encode results
 
     async def encoded(self, item, final, ok, saved, sec):
-        if saved:
+        if saved:                          # (tagged by the encode)
             item.file, item.duration = item.mp3, sec
-            write_meta(item.mp3, {"title": item.title, "app": item.app,
-                                  "started": item.started, "duration": sec,
-                                  "input": item.input_desc or self.input_description(item.input)})
         if not ok:
             item.error = "encoding failed; FLAC kept"
         if final:
@@ -851,11 +882,12 @@ class Recorder:
             if "module-null-sink" in line and re.search(r"sink_name=grab_\d", line):
                 await run("pactl", "unload-module", line.split()[0])
 
-    def recover_orphans(self):
+    async def recover_orphans(self):
         for flac in sorted(glob.glob(os.path.join(OUTDIR, ".*.flac"))):
             base = os.path.basename(flac)[1:-5]
             mp3 = os.path.join(OUTDIR, base + ".mp3")
-            meta = read_meta(mp3) or {}    # from a pause snapshot, if there was one
+            # tagged when recording started; older ones: from a pause snapshot
+            meta = await read_tags(flac) or await read_tags(mp3) or {}
             title = base.split("_", 2)[2] if base.count("_") >= 2 else base
             item = Item(title=meta.get("title") or title, app=meta.get("app", ""))
             m = re.match(r"(\d{4}-\d\d-\d\d)_(\d\d)-(\d\d)-(\d\d)_", base)
@@ -987,7 +1019,7 @@ async def main():
     bus.export(OBJ_PATH, rec.iface)
     await bus.request_name(BUS_NAME)
 
-    rec.recover_orphans()
+    await rec.recover_orphans()
     rec.players = Players(bus, lambda: rec.later("streams", rec.refresh_streams))
     try:
         await rec.players.start()
