@@ -55,7 +55,7 @@ Item {
     // Status line: stateText, then (with an input) a mic icon and inputText, e.g.
     // "Recording · 🎤 Brio 500 Analog Stereo", "Paused · 🎤 Default (…) · saved 0:42"
     readonly property bool showInput: !finished && input !== ""
-    readonly property string stateText: showInput ? statusHead + " ·" : [statusHead].concat(statusRest).join(" · ")
+    readonly property string stateText: showInput ? statusHead : [statusHead].concat(statusRest).join(" · ")
     readonly property string inputText: [input_description].concat(statusRest).join(" · ")
     readonly property string statusHead: {
         return {
@@ -121,7 +121,7 @@ Item {
             Layout.minimumHeight: Kirigami.Units.iconSizes.small
             Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing
             Layout.bottomMargin: -Kirigami.Units.smallSpacing
-            spacing: Kirigami.Units.smallSpacing / 2
+            spacing: 0
             readonly property bool alert: row.itemState === "failed" || row.error !== ""
             readonly property color textColor: alert ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
             opacity: alert ? 1 : 0.7
@@ -134,7 +134,21 @@ Item {
                 font: Kirigami.Theme.smallFont
                 color: statusLine.textColor
             }
+            FontMetrics { id: statusMetrics; font: Kirigami.Theme.smallFont }
+            PlasmaComponents3.Label {      // "·" with a space's width on both sides
+                objectName: "statusDot"
+                visible: row.showInput
+                Layout.leftMargin: statusMetrics.advanceWidth(" ")
+                Layout.rightMargin: statusMetrics.advanceWidth(" ") - micIcon.padding
+                text: "·"
+                font: Kirigami.Theme.smallFont
+                color: statusLine.textColor
+            }
             Kirigami.Icon {
+                id: micIcon
+                // transparent margin inside the icon left of the (narrow) mic glyph,
+                // measured for Breeze: ~6 of 16 px
+                readonly property real padding: Math.round(implicitWidth * 0.375)
                 visible: row.showInput
                 source: "audio-input-microphone"
                 implicitWidth: Kirigami.Units.iconSizes.small
