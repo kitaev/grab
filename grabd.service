@@ -4,7 +4,7 @@ After=pipewire-pulse.service
 Wants=pipewire-pulse.service
 
 [Service]
-ExecStart=%h/.local/bin/grabd
+ExecStart=/usr/bin/grabd
 TimeoutStopSec=600
 # Stop signals grabd only; it stops its ffmpeg children itself (SIGINT, so they
 # finish their FLAC). With the default, ffmpeg got systemd's SIGTERM too and the
@@ -12,5 +12,7 @@ TimeoutStopSec=600
 KillMode=mixed
 Restart=on-failure
 
+# Started on demand by the tray widget (D-Bus activation, org.grab.Recorder);
+# `systemctl --user enable grabd` starts it at login instead.
 [Install]
 WantedBy=default.target

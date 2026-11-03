@@ -1,0 +1,38 @@
+# Built by ../../build.sh, which fills in @PKGVER@ and @SHA256@ and provides
+# the source tarball (git archive of HEAD).
+pkgname=grab-recorder
+pkgver=@PKGVER@
+pkgrel=1
+pkgdesc="Record what applications play (PipeWire), with a KDE Plasma system tray widget"
+arch=('any')
+license=('GPL-3.0-or-later')
+depends=(
+    'python' 'python-dbus-next'
+    'ffmpeg'                            # recording, encoding, tags
+    'pipewire' 'pipewire-audio'         # pw-dump/pw-link/pw-metadata, pw-record, WebRTC echo canceller
+    'pipewire-pulse' 'libpulse'         # pactl
+    'wireplumber'
+    'glib2'                             # gio trash
+    'plasma-workspace' 'libplasma' 'kirigami'   # the tray widget
+)
+optdepends=('python-mutagen: read tags and remove entries in place (much faster)')
+install=grab-recorder.install
+source=("grab-$pkgver.tar.gz")
+sha256sums=('@SHA256@')
+
+package() {
+    cd "grab-$pkgver"
+    install -Dm755 grabd "$pkgdir/usr/bin/grabd"
+    install -Dm644 grabd.service "$pkgdir/usr/lib/systemd/user/grabd.service"
+    install -Dm644 packaging/org.grab.Recorder.service \
+        "$pkgdir/usr/share/dbus-1/services/org.grab.Recorder.service"
+
+    local widget="$pkgdir/usr/share/plasma/plasmoids/org.grab.recorder"
+    install -Dm644 plasmoid/metadata.json "$widget/metadata.json"
+    install -Dm644 -t "$widget/contents/ui" plasmoid/contents/ui/*.qml
+    # the widget reports the package version
+    python -c 'import json, sys
+p, v = sys.argv[1], sys.argv[2]
+m = json.load(open(p)); m["KPlugin"]["Version"] = v
+json.dump(m, open(p, "w"), indent=4, ensure_ascii=False)' "$widget/metadata.json" "$pkgver"
+}

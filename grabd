@@ -108,7 +108,23 @@ from dbus_next.service import signal as dbus_signal
 
 # ------------------------------------------------------------------ settings
 
-OUTDIR = os.path.expanduser("~/Music/grab")
+def music_dir():
+    """The XDG music folder (localized names, e.g. ~/Музыка), else ~/Music."""
+    conf = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "user-dirs.dirs")
+    try:
+        for line in open(conf):
+            m = re.match(r'\s*XDG_MUSIC_DIR="(.*)"', line)
+            if m:
+                path = m[1].replace("$HOME", os.path.expanduser("~"))
+                if os.path.isabs(path) and os.path.normpath(path) != os.path.expanduser("~"):
+                    return path
+    except OSError:
+        pass
+    return os.path.expanduser("~/Music")
+
+
+OUTDIR = os.environ.get("GRAB_OUTDIR") or os.path.join(music_dir(), "grab")
 AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
       "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
 MIC_GATE_DB = -45          # input quieter than this is muted, so its noise isn't "sound"

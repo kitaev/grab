@@ -1,0 +1,6 @@
+# D-Bus activation: the tray widget's first call starts grabd (as the user
+# service, so systemd manages it).
+[D-BUS Service]
+Name=org.grab.Recorder
+Exec=/usr/bin/grabd
+SystemdService=grabd.service
