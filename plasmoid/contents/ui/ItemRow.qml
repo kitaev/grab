@@ -1,8 +1,8 @@
 // One grabd item: the status line, then record/pause (or, for a recording, a
 // file icon) left of the title and a "⋮" actions menu on the right. Streams'
 // menu: Microphone (the input mixed in), Save Now, Show in Folder, Remove
-// Record; recordings': Show in Folder, Remove Entry (and Data). The selected
-// input is shown under the title.
+// Record; recordings': Show in Folder, Remove Entry (and Data). The status
+// line names the selected input.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -52,21 +52,26 @@ Item {
                            : `${Math.floor(sec / 60)}:${two(sec % 60)}`;
     }
 
+    // e.g. "Recording · Brio 500 Analog Stereo", "Paused · Default (…) · saved 0:42"
     readonly property string stateText: {
-        let text = {
+        const parts = [{
             "available": "Ready to record",
             "recording": "Recording",
-            "paused": file ? `Paused · saved ${mmss(duration)}` : "Paused",
+            "paused": "Paused",
             "encoding": "Encoding…",
             "done": (app ? `Saved from ${app}` : "Saved") + ` · ${mmss(duration)}`,
             "empty": "Nothing recorded",
             "failed": `Failed: ${error || "unknown error"}`,
-        }[itemState] || itemState;
-        if (error && itemState !== "failed")     // failed already says why
-            text += ` · ${error}`;
-        if (busy && (itemState === "recording" || itemState === "paused"))
-            text += " · saving…";
-        return text;
+        }[itemState] || itemState];
+        if (!finished && input)                 // the input mixed into the recording
+            parts.push(input_description);
+        if (itemState === "paused" && file)
+            parts.push(`saved ${mmss(duration)}`);
+        if (error && itemState !== "failed")    // failed already says why
+            parts.push(error);
+        if (busy && active)
+            parts.push("saving…");
+        return parts.join(" · ");
     }
 
     readonly property var toggleAction: ({
@@ -187,28 +192,6 @@ Item {
                     maximumLineCount: 4
                     elide: Text.ElideRight
                     font.weight: row.itemState === "recording" ? Font.DemiBold : Font.Normal
-                }
-
-                RowLayout {                // the input mixed into the recording, if any
-                    objectName: "inputInfo"
-                    Layout.fillWidth: true
-                    Layout.topMargin: Kirigami.Units.smallSpacing / 2
-                    spacing: Kirigami.Units.smallSpacing
-                    visible: !row.finished && row.input !== ""
-
-                    Kirigami.Icon {
-                        source: "audio-input-microphone"
-                        implicitWidth: Kirigami.Units.iconSizes.small
-                        implicitHeight: implicitWidth
-                        opacity: 0.7
-                    }
-                    PlasmaComponents3.Label {
-                        Layout.fillWidth: true
-                        text: row.input_description
-                        elide: Text.ElideRight
-                        font: Kirigami.Theme.smallFont
-                        opacity: 0.7
-                    }
                 }
             }
 
