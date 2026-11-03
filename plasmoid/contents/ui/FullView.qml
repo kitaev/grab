@@ -1,6 +1,6 @@
 // The popup: a Streams tab (what can be or is being recorded) and a Recordings
 // tab (finished recordings), and a footer with the recordings folder and,
-// on Recordings, Remove All Finished.
+// on Recordings, a "⋮" menu to remove all of them.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -87,8 +87,14 @@ ColumnLayout {
         PlasmaComponents3.ToolButton {
             id: removeAllButton
             objectName: "removeAllButton"
-            icon.name: "edit-clear-all"
-            text: "Remove All Finished"
+            icon.name: "view-more-symbolic"
+            icon.width: Kirigami.Units.iconSizes.smallMedium
+            icon.height: Kirigami.Units.iconSizes.smallMedium
+            text: "Remove All"
+            display: PlasmaComponents3.AbstractButton.IconOnly
+            PlasmaComponents3.ToolTip.text: text
+            PlasmaComponents3.ToolTip.visible: hovered && !removeAllMenu.visible
+            PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
             visible: view.onRecords
             enabled: view.recorder.finishedCount > 0
             checkable: true
