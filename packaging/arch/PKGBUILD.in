@@ -15,6 +15,7 @@ depends=(
     'wireplumber'
     'glib2'                             # gio trash
     'plasma-workspace' 'libplasma' 'kirigami'   # the tray widget
+    'purpose'                           # the widget's Share menu
 )
 install=grab-recorder.install
 source=("grab-$pkgver.tar.gz")

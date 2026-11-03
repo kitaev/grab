@@ -7,6 +7,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.plasma.extras as PlasmaExtras
+import org.kde.purpose as Purpose
 
 ColumnLayout {
     id: view
@@ -35,6 +36,108 @@ ColumnLayout {
             confirmAction.text = action;
             confirmDialog.proceed = proceed;
             confirmDialog.open();
+        }
+    }
+
+    // Share: run the chosen Purpose plugin for a recording. Plugins that need
+    // settings (a Bluetooth device, a Nextcloud account, ...) show them in
+    // shareDialog; others (Telegram, Email, Clipboard) just run.
+    Purpose.PurposeAlternativesModel {
+        id: shareModel
+        objectName: "shareModel"
+        pluginType: "Export"
+    }
+    property var shareIds: []              // shareModel's plugin ids, by row
+    Instantiator {
+        model: shareModel
+        delegate: QtObject {
+            required property int index
+            required property string pluginId
+        }
+        onObjectAdded: (index, object) => { const ids = view.shareIds.slice(); ids[index] = object.pluginId; view.shareIds = ids; }
+        onObjectRemoved: (index, object) => { const ids = view.shareIds.slice(); ids.splice(index, 1); view.shareIds = ids; }
+    }
+
+    function share(file, pluginId) {
+        if (shareJob.jobState === Purpose.PurposeJobController.Configuring
+                || shareJob.jobState === Purpose.PurposeJobController.Running)
+            return;                        // one at a time
+        shareModel.inputData = {urls: ["file://" + file.split("/").map(encodeURIComponent).join("/")],
+                                mimeType: "audio/mpeg"};
+        const row = shareIds.indexOf(pluginId);
+        if (row < 0) {
+            console.warn("grab: share target not found:", pluginId);
+            return;
+        }
+        shareDialog.message = "";
+        shareJob.index = -1;               // a new job even for the same row
+        shareJob.index = row;
+        shareJob.start();
+    }
+
+    Connections {
+        target: view.recorder
+        function onShareRequested(file, pluginId) { view.share(file, pluginId); }
+    }
+
+    Connections {
+        target: shareJob
+        function onJobStateChanged() {
+            switch (shareJob.jobState) {
+            case Purpose.PurposeJobController.Configuring:
+                shareDialog.open();
+                break;
+            case Purpose.PurposeJobController.Finished: {
+                const url = shareJob.job && shareJob.job.output ? shareJob.job.output.url : "";
+                if (url) {                 // uploads report where the file went
+                    shareDialog.message = "Shared: " + url;
+                    shareDialog.open();
+                } else {
+                    shareDialog.close();
+                }
+                break;
+            }
+            case Purpose.PurposeJobController.Error:
+                shareDialog.message = "Could not share: "
+                    + (shareJob.job ? shareJob.job.errorString || shareJob.job.errorText : "unknown error");
+                shareDialog.open();
+                break;
+            case Purpose.PurposeJobController.Cancelled:
+                shareDialog.close();
+                break;
+            }
+        }
+    }
+
+    Kirigami.Dialog {
+        id: shareDialog
+        objectName: "shareDialog"
+        property string message: ""
+        parent: view
+        title: "Share"
+        preferredWidth: Kirigami.Units.gridUnit * 22
+        standardButtons: QQC2.Dialog.NoButton
+
+        ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+
+            Purpose.JobView {
+                id: shareJob
+                Layout.fillWidth: true
+                Layout.preferredHeight: implicitHeight
+                Layout.minimumHeight: jobState === Purpose.PurposeJobController.Running
+                    ? Kirigami.Units.gridUnit * 4 : 0
+                model: shareModel
+                visible: shareDialog.message === ""
+            }
+            Kirigami.SelectableLabel {
+                Layout.fillWidth: true
+                Layout.margins: Kirigami.Units.largeSpacing
+                visible: shareDialog.message !== ""
+                text: shareDialog.message
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+            }
         }
     }
 

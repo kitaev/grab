@@ -71,6 +71,10 @@ QtObject {
     function setEchoCancel(id, on) { call("SetEchoCancel", [id, on]); }
     function removeRecord(id) { call("RemoveRecord", [id]); }
 
+    // Share ▸ (KDE Purpose, like Dolphin's): FullView runs the plugin, showing
+    // its settings if it needs any (e.g. which Bluetooth device).
+    signal shareRequested(string file, string pluginId)
+
     // Removing files: to the Trash right away; deleted permanently (Shift held,
     // see ShiftMenu) after confirmRequested (FullView asks) calls proceed.
     signal confirmRequested(string title, string message, string action, var proceed)

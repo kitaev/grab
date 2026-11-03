@@ -21,7 +21,7 @@ It has two parts:
 
 pacman installs all the runtime dependencies: python, python-dbus-next,
 python-mutagen, ffmpeg, pipewire, pipewire-audio, pipewire-pulse, libpulse,
-wireplumber, glib2, plasma-workspace, libplasma and kirigami.
+wireplumber, glib2, plasma-workspace, libplasma, kirigami and purpose.
 
 To build the package you also need git and `base-devel` (for makepkg).
 
@@ -119,6 +119,16 @@ Trash*. Hold **Shift** while the menu is open, as in Dolphin, and these items
 change to delete the files permanently instead. Permanent deletes ask for
 confirmation first. *Remove Entry* takes a recording off the list and keeps
 its file.
+
+## Sharing recordings
+
+A recording's "⋮" menu has a **Share** submenu, the same one Dolphin shows.
+KDE's Purpose framework provides it, so it lists whatever share targets are
+installed: Send via Telegram, Send via Email, Send via Bluetooth, KDE Connect,
+Nextcloud, Copy to Clipboard and so on. Send via Telegram opens Telegram
+Desktop's own chat picker, so you choose the chat or group there. Targets that
+need settings first, such as a Bluetooth device or a Nextcloud account, show
+them in a dialog.
 
 ## How recordings are stored
 

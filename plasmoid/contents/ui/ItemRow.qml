@@ -9,6 +9,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents3
 import org.kde.plasma.workspace.dbus as DBus
+import org.kde.purpose as Purpose
 
 Item {
     id: row
@@ -447,6 +448,34 @@ Item {
                         icon.name: "folder-open"
                         enabled: row.file !== ""
                         onTriggered: row.showInFolder()
+                    }
+                    PlasmaComponents3.Menu {
+                        id: shareMenu
+                        objectName: "shareMenu"
+                        title: "Share"
+                        icon.name: "document-share"
+                        enabled: row.file !== "" && shareList.count > 0
+
+                        // what Purpose offers for an MP3 (Bluetooth, Telegram, Email, ...),
+                        // listed while the menu is open
+                        Instantiator {
+                            id: shareList
+                            model: Purpose.PurposeAlternativesModel {
+                                pluginType: "Export"
+                                inputData: moreMenu.visible && row.file !== ""
+                                    ? {urls: [row.fileUrl(row.file)], mimeType: "audio/mpeg"} : {}
+                            }
+                            delegate: PlasmaComponents3.MenuItem {
+                                required property string actionDisplay
+                                required property string iconName
+                                required property string pluginId
+                                text: actionDisplay
+                                icon.name: iconName
+                                onTriggered: row.recorder.shareRequested(row.file, pluginId)
+                            }
+                            onObjectAdded: (index, object) => shareMenu.insertItem(index, object)
+                            onObjectRemoved: (index, object) => shareMenu.removeItem(object)
+                        }
                     }
                     PlasmaComponents3.MenuSeparator {}
                     ShiftMenuItem {
