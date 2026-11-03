@@ -10,6 +10,10 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   Remove(s id, b with_data)             remove a finished item (done / empty / failed);
                                         with_data also moves its files to the Trash
   RemoveFinished(b with_data)           Remove() every finished item
+  SaveNow(s id)                         save an MP3 snapshot of a recording/paused item now
+  RemoveRecord(s id)                    discard a recording/paused item's recording: stop it,
+                                        move its MP3, metadata and FLAC to the Trash; the
+                                        stream is offered again
   signal ItemsChanged(a(sa{sv}))        full item list after any change
   signal InputsChanged(a(ssb))          full input list after any change
   GetState()             -> s          JSON {"items": [{properties}], "inputs":
@@ -743,6 +747,42 @@ class Recorder:
         for item in list(self.items.values()):
             await self.remove(item, with_data)
 
+    def save_now(self, item):
+        if item.state in ACTIVE and item.flac:
+            self.queue.request(item)
+            self.changed()
+
+    async def remove_record(self, item):
+        async with item.op:
+            if item.state not in ACTIVE or self.items.get(item.id) is not item:
+                return
+            item.pending = True            # no Toggle meanwhile
+            self.changed()
+            try:
+                await self._teardown(item)
+                # let a snapshot of this item finish (or drop a queued one), so no
+                # encode writes the MP3 again after it went to the Trash
+                self.queue.pending.pop(item, None)
+                while self.queue.current is item:
+                    await asyncio.sleep(0.1)
+                item.busy = False
+                mp3 = item.mp3
+                paths = [p for p in (mp3, mp3 and meta_path(mp3), item.flac) if p and os.path.exists(p)]
+                if paths:
+                    rc, _ = await run("gio", "trash", "--", *paths)
+                    if rc != 0:
+                        item.error = "could not move the recording to the Trash"
+                item.flac = item.mp3 = item.file = item.started = ""
+                item.duration = 0.0
+                item.sink, item.sink_node, item.proc = "", None, None
+                if item.stream:
+                    item.state = "available"
+                else:                      # the stream is gone too: nothing left to show
+                    self.items.pop(item.id, None)
+            finally:
+                item.pending = False
+                self.changed()
+
     # ---- files in the recordings folder
 
     async def scan_files(self):
@@ -877,6 +917,18 @@ class RecorderInterface(ServiceInterface):
     @method()
     def RemoveFinished(self, with_data: "b"):
         self._spawn(self.rec.remove_finished(with_data))
+
+    @method()
+    def SaveNow(self, item_id: "s"):
+        item = self._item(item_id)
+        if item:
+            self.rec.save_now(item)
+
+    @method()
+    def RemoveRecord(self, item_id: "s"):
+        item = self._item(item_id)
+        if item:
+            self._spawn(self.rec.remove_record(item))
 
     @dbus_signal()
     def ItemsChanged(self) -> "a(sa{sv})":

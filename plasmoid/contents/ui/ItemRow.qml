@@ -1,7 +1,8 @@
 // One grabd item: the status line, then record/pause (or, for a recording, a
-// file icon) left of the title, on the right Show in Folder for a paused
-// stream or a "⋮" actions menu for a recording, and for streams that can be
-// recorded the microphone combobox below.
+// file icon) left of the title and a "⋮" actions menu on the right. Streams'
+// menu: Microphone (the input mixed in), Save Now, Show in Folder, Remove
+// Record; recordings': Show in Folder, Remove Entry (and Data). The selected
+// input is shown under the title.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -34,6 +35,7 @@ Item {
     onPendingChanged: clicked = false
     onItemStateChanged: clicked = false
     readonly property bool controllable: ["available", "recording", "paused"].indexOf(itemState) >= 0
+    readonly property bool active: itemState === "recording" || itemState === "paused"
 
     implicitHeight: column.implicitHeight + column.anchors.topMargin + column.anchors.bottomMargin
 
@@ -73,7 +75,7 @@ Item {
         "paused": {text: "Resume", icon: "media-record"},
     })[itemState] || {text: "Record", icon: "media-record"}
 
-    // [{value, text}] for the combobox: None, Default, then every source.
+    // [{value, text}] for the Microphone menu: None, Default, then every source.
     readonly property var inputChoices: {
         const def = recorder.inputs.find(i => i.default);
         return [{value: "", text: "None"},
@@ -186,22 +188,31 @@ Item {
                     elide: Text.ElideRight
                     font.weight: row.itemState === "recording" ? Font.DemiBold : Font.Normal
                 }
+
+                RowLayout {                // the input mixed into the recording, if any
+                    objectName: "inputInfo"
+                    Layout.fillWidth: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing / 2
+                    spacing: Kirigami.Units.smallSpacing
+                    visible: !row.finished && row.input !== ""
+
+                    Kirigami.Icon {
+                        source: "audio-input-microphone"
+                        implicitWidth: Kirigami.Units.iconSizes.small
+                        implicitHeight: implicitWidth
+                        opacity: 0.7
+                    }
+                    PlasmaComponents3.Label {
+                        Layout.fillWidth: true
+                        text: row.input_description
+                        elide: Text.ElideRight
+                        font: Kirigami.Theme.smallFont
+                        opacity: 0.7
+                    }
+                }
             }
 
-            PlasmaComponents3.ToolButton {     // paused stream with a saved snapshot
-                Layout.alignment: Qt.AlignTop      // with the title, like the icon on the left
-                Layout.topMargin: row.buttonShift
-                icon.name: "folder-open"
-                text: "Show in Folder"
-                display: PlasmaComponents3.AbstractButton.IconOnly
-                visible: !row.finished && row.file !== ""
-                onClicked: row.showInFolder()
-                PlasmaComponents3.ToolTip.text: text
-                PlasmaComponents3.ToolTip.visible: hovered
-                PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
-            }
-
-            PlasmaComponents3.ToolButton {     // a recording's actions
+            PlasmaComponents3.ToolButton {     // the entry's actions
                 id: moreButton
                 objectName: "moreButton"
                 Layout.alignment: Qt.AlignTop
@@ -209,13 +220,65 @@ Item {
                 icon.name: "view-more-symbolic"
                 text: "Actions"
                 display: PlasmaComponents3.AbstractButton.IconOnly
-                visible: row.finished
+                readonly property var menu: row.finished ? moreMenu : streamMenu
                 checkable: true
-                checked: moreMenu.visible
-                onClicked: moreMenu.popup(moreButton, 0, moreButton.height)
+                checked: menu.visible
+                onClicked: menu.popup(moreButton, 0, moreButton.height)
                 PlasmaComponents3.ToolTip.text: text
-                PlasmaComponents3.ToolTip.visible: hovered && !moreMenu.visible
+                PlasmaComponents3.ToolTip.visible: hovered && !menu.visible
                 PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+
+                PlasmaComponents3.Menu {
+                    id: streamMenu
+                    objectName: "streamMenu"
+
+                    PlasmaComponents3.Menu {
+                        id: micMenu
+                        objectName: "micMenu"
+                        title: "Microphone"
+                        icon.name: "audio-input-microphone"
+                        enabled: row.controllable && !row.toggling
+
+                        Instantiator {
+                            model: row.inputChoices
+                            delegate: PlasmaComponents3.MenuItem {
+                                required property var modelData
+                                text: modelData.text
+                                checkable: true
+                                autoExclusive: true    // one of them: radio indicators
+                                checked: modelData.value === row.input
+                                onTriggered: {
+                                    row.recorder.setInput(row.itemId, modelData.value);
+                                    // triggering toggles `checked`; grabd's state decides it
+                                    checked = Qt.binding(() => modelData.value === row.input);
+                                }
+                            }
+                            onObjectAdded: (index, object) => micMenu.insertItem(index, object)
+                            onObjectRemoved: (index, object) => micMenu.removeItem(object)
+                        }
+                    }
+                    PlasmaComponents3.MenuItem {
+                        objectName: "saveNow"
+                        text: "Save Now"
+                        icon.name: "document-save"
+                        enabled: row.active && !row.busy && !row.toggling
+                        onTriggered: row.recorder.saveNow(row.itemId)
+                    }
+                    PlasmaComponents3.MenuItem {
+                        text: "Show in Folder"
+                        icon.name: "folder-open"
+                        enabled: row.file !== ""
+                        onTriggered: row.showInFolder()
+                    }
+                    PlasmaComponents3.MenuSeparator {}
+                    PlasmaComponents3.MenuItem {
+                        objectName: "removeRecord"
+                        text: "Remove Record"
+                        icon.name: "user-trash"
+                        enabled: row.file !== "" && row.active && !row.toggling
+                        onTriggered: row.recorder.removeRecord(row.itemId)
+                    }
+                }
 
                 PlasmaComponents3.Menu {
                     id: moreMenu
@@ -237,36 +300,6 @@ Item {
                         icon.name: "user-trash"
                         onTriggered: row.recorder.remove(row.itemId, true)
                     }
-                }
-            }
-        }
-
-        RowLayout {                        // only for streams that can still be recorded
-            spacing: Kirigami.Units.smallSpacing
-            Layout.fillWidth: true
-            Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing   // under the title
-            visible: row.controllable
-
-            Kirigami.Icon {
-                source: "audio-input-microphone"
-                implicitWidth: Kirigami.Units.iconSizes.small
-                implicitHeight: implicitWidth
-            }
-
-            PlasmaComponents3.ComboBox {
-                id: micBox
-                objectName: "micBox"
-                Layout.fillWidth: true
-                Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                model: row.inputChoices
-                textRole: "text"
-                valueRole: "value"
-                currentIndex: row.inputChoices.findIndex(c => c.value === row.input)
-                displayText: currentIndex >= 0 ? currentText : row.input_description
-                onActivated: index => {
-                    row.recorder.setInput(row.itemId, row.inputChoices[index].value);
-                    // selecting replaces the binding; restore it so grabd stays the source of truth
-                    currentIndex = Qt.binding(() => row.inputChoices.findIndex(c => c.value === row.input));
                 }
             }
         }

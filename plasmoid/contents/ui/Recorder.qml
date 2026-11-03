@@ -48,6 +48,8 @@ QtObject {
     function setInput(id, input) { call("SetInput", [id, input]); }
     function remove(id, withData) { call("Remove", [id, withData]); }
     function removeFinished(withData) { call("RemoveFinished", [withData]); }
+    function saveNow(id) { call("SaveNow", [id]); }
+    function removeRecord(id) { call("RemoveRecord", [id]); }
 
     function apply(json) {
         let state;
