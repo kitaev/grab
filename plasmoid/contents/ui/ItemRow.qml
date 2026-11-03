@@ -1,6 +1,7 @@
 // One grabd item: the status line, then record/pause (or, for a recording, a
-// file icon) left of the title with file buttons on the right, and for
-// streams that can be recorded the microphone combobox below.
+// file icon) left of the title, on the right Show in Folder for a paused
+// stream or a "⋮" actions menu for a recording, and for streams that can be
+// recorded the microphone combobox below.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -180,33 +181,41 @@ Item {
                 }
             }
 
-            PlasmaComponents3.ToolButton {
+            PlasmaComponents3.ToolButton {     // paused stream with a saved snapshot
                 icon.name: "folder-open"
-                text: "Show in folder"
+                text: "Show in Folder"
                 display: PlasmaComponents3.AbstractButton.IconOnly
-                visible: row.file !== ""
+                visible: !row.finished && row.file !== ""
                 onClicked: row.showInFolder()
                 PlasmaComponents3.ToolTip.text: text
                 PlasmaComponents3.ToolTip.visible: hovered
                 PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
             }
 
-            PlasmaComponents3.ToolButton {
-                id: removeButton
-                objectName: "removeButton"
-                icon.name: "edit-delete-remove"
-                text: "Remove"
+            PlasmaComponents3.ToolButton {     // a recording's actions
+                id: moreButton
+                objectName: "moreButton"
+                icon.name: "view-more-symbolic"
+                text: "Actions"
                 display: PlasmaComponents3.AbstractButton.IconOnly
                 visible: row.finished
                 checkable: true
-                checked: removeMenu.visible
-                onClicked: removeMenu.popup(removeButton, 0, removeButton.height)
+                checked: moreMenu.visible
+                onClicked: moreMenu.popup(moreButton, 0, moreButton.height)
                 PlasmaComponents3.ToolTip.text: text
-                PlasmaComponents3.ToolTip.visible: hovered && !removeMenu.visible
+                PlasmaComponents3.ToolTip.visible: hovered && !moreMenu.visible
                 PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
 
                 PlasmaComponents3.Menu {
-                    id: removeMenu
+                    id: moreMenu
+                    objectName: "moreMenu"
+                    PlasmaComponents3.MenuItem {
+                        text: "Show in Folder"
+                        icon.name: "folder-open"
+                        enabled: row.file !== ""
+                        onTriggered: row.showInFolder()
+                    }
+                    PlasmaComponents3.MenuSeparator {}
                     PlasmaComponents3.MenuItem {
                         text: "Remove Entry"
                         icon.name: "edit-clear"
