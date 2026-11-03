@@ -18,9 +18,11 @@ file, duration, error.
   state: available | recording | paused | encoding | done | empty | failed
   busy:  an MP3 snapshot/final encode is queued or running for this item
 
-Recording: a hidden virtual null sink per recording; the app stream (and the
-chosen input) are linked into it alongside their normal routing; one ffmpeg
-writes a lossless FLAC with silence removed. Pause unlinks and saves an MP3
+Recording: two hidden virtual null sinks per recording, one for the app stream
+and one for the chosen input, linked alongside their normal routing; one
+ffmpeg gates the input's background noise, mixes both and writes a lossless
+FLAC with silence removed. If the input's source goes away or changes (mic
+unplugged and replugged, new default), it is relinked. Pause unlinks and saves an MP3
 snapshot; resume relinks and appends. When the stream disappears the item is
 finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
@@ -56,6 +58,9 @@ from dbus_next.service import signal as dbus_signal
 OUTDIR = os.path.expanduser("~/Music/grab")
 AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
       "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
+MIC_GATE_DB = -45          # input quieter than this is muted, so its noise isn't "sound"
+MIX = (f"[1:a]agate=threshold={10 ** (MIC_GATE_DB / 20):.6f}:range=0:attack=5:release=300[mic];"
+       f"[0:a][mic]amix=inputs=2:duration=longest:normalize=0,{AF}")
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
@@ -268,6 +273,10 @@ class Item:
         self.sink = ""
         self.sink_node = None
         self.module = None
+        self.mic_sink = ""                 # the input's sink, mixed in by ffmpeg
+        self.mic_node = None
+        self.mic_module = None
+        self.input_node = None             # source node the input is linked from now
         self.proc = None
         self.flac = ""
         self.mp3 = ""
@@ -512,12 +521,12 @@ class Recorder:
             self.sources, self.default_source = sources, default
             if self.iface:
                 self.iface.InputsChanged()
-            if default_changed:
-                for item in self.items.values():
-                    if item.input == "default" and item.state == "recording":
-                        async with item.op:
-                            await self._unlink(item.input_links)
-                            item.input_links = await self._link_input(item)
+            for item in list(self.items.values()):
+                if item.state == "recording" and item.input \
+                        and self._source_node(item.input) != item.input_node:
+                    async with item.op:
+                        if item.state == "recording":
+                            await self._link_input(item)
             self.changed()
 
     def _source_node(self, inp):
@@ -526,10 +535,10 @@ class Recorder:
 
     # ---- PipeWire plumbing
 
-    async def _sink_node(self, item):
+    async def _sink_node(self, name):
         for _ in range(25):
             for s in await pactl_json("sinks"):
-                if s.get("name") == item.sink:
+                if s.get("name") == name:
                     return str(s.get("properties", {}).get("object.id"))
             await asyncio.sleep(0.2)
         return None
@@ -553,10 +562,27 @@ class Recorder:
         pairs.clear()
 
     async def _link_input(self, item):
-        if not item.input:
-            return []
-        src = self._source_node(item.input)
-        return await self._link(src, item.sink_node) if src else []
+        """(Re)link the item's input source into its mic sink."""
+        await self._unlink(item.input_links)
+        item.input_node = None
+        src = self._source_node(item.input) if item.input else None
+        if src and item.mic_node:
+            item.input_links = await self._link(src, item.mic_node)
+            if item.input_links:
+                item.input_node = src
+
+    async def _unlink_input(self, item):
+        await self._unlink(item.input_links)
+        item.input_node = None
+
+    async def _load_sink(self, name, s, description):
+        ch = len(s.channel_map.split(","))
+        rc, out = await run(
+            "pactl", "load-module", "module-null-sink",
+            f"sink_name={name}", f"channels={ch}", f"channel_map={s.channel_map}",
+            f"sink_properties='node.virtual=true device.description=\"{description}\" "
+            "device.icon_name=\"media-record\"'")
+        return out.strip() if rc == 0 else None
 
     # ---- actions
 
@@ -566,14 +592,14 @@ class Recorder:
                 await self._start(item)
             elif item.state == "recording":
                 await self._unlink(item.stream_links)
-                await self._unlink(item.input_links)
+                await self._unlink_input(item)
                 item.state = "paused"
                 self.changed()
                 asyncio.get_running_loop().call_later(
                     SAVE_DELAY, lambda: (self.queue.request(item), self.changed()))
             elif item.state == "paused" and item.stream:
                 item.stream_links = await self._link(item.stream.node, item.sink_node)
-                item.input_links = await self._link_input(item)
+                await self._link_input(item)
                 item.state = "recording"
                 self.changed()
 
@@ -586,22 +612,21 @@ class Recorder:
         base = f"{time.strftime('%Y-%m-%d_%H-%M-%S', now)}_{fname(item.title)}"
         item.flac = os.path.join(OUTDIR, f".{base}.flac")
         item.mp3 = os.path.join(OUTDIR, f"{base}.mp3")
-        ch = len(s.channel_map.split(","))
-        rc, out = await run(
-            "pactl", "load-module", "module-null-sink",
-            f"sink_name={item.sink}", f"channels={ch}", f"channel_map={s.channel_map}",
-            "sink_properties='node.virtual=true device.description=\"Grab\" "
-            "device.icon_name=\"media-record\"'")
-        if rc != 0:
+        item.mic_sink = item.sink + "_mic"
+        item.module = await self._load_sink(item.sink, s, "Grab")
+        item.mic_module = await self._load_sink(item.mic_sink, s, "Grab input")
+        if not item.module or not item.mic_module:
             item.error = "could not create sink"
+            await self._teardown(item)
             self.changed()
             return
-        item.module = out.strip()
-        item.sink_node = await self._sink_node(item)
+        item.sink_node = await self._sink_node(item.sink)
+        item.mic_node = await self._sink_node(item.mic_sink)
         item.proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-loglevel", "error",
             "-f", "pulse", "-i", f"{item.sink}.monitor",
-            "-af", AF, "-c:a", "flac", "-flush_packets", "1", item.flac,
+            "-f", "pulse", "-i", f"{item.mic_sink}.monitor",
+            "-filter_complex", MIX, "-c:a", "flac", "-flush_packets", "1", item.flac,
             stdin=asyncio.subprocess.DEVNULL)
         item.stream_links = await self._link(s.node, item.sink_node) if item.sink_node else []
         if not item.stream_links:
@@ -612,7 +637,7 @@ class Recorder:
             item.flac = item.mp3 = ""
             self.changed()
             return
-        item.input_links = await self._link_input(item)
+        await self._link_input(item)
         item.state = "recording"
         self.changed()
 
@@ -620,22 +645,22 @@ class Recorder:
         async with item.op:
             item.input = inp
             if item.state == "recording":
-                await self._unlink(item.input_links)
-                item.input_links = await self._link_input(item)
+                await self._link_input(item)
             self.changed()
 
     async def _teardown(self, item):
         await self._unlink(item.stream_links)
-        await self._unlink(item.input_links)
+        await self._unlink_input(item)
         if item.proc and item.proc.returncode is None:
             item.proc.send_signal(signal.SIGINT)          # ffmpeg finalizes the FLAC
             try:
                 await asyncio.wait_for(item.proc.wait(), 15)
             except asyncio.TimeoutError:
                 item.proc.kill()
-        if item.module:
-            await run("pactl", "unload-module", item.module)
-            item.module = None
+        for attr in ("module", "mic_module"):
+            if getattr(item, attr):
+                await run("pactl", "unload-module", getattr(item, attr))
+                setattr(item, attr, None)
 
     async def finalize(self, item):
         async with item.op:
