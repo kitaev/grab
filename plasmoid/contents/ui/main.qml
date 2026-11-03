@@ -42,7 +42,7 @@ PlasmoidItem {
         acceptedButtons: Qt.LeftButton
         onClicked: root.expanded = !root.expanded
 
-        // A microphone in a ring: white, the ring red while recording.
+        // A microphone in a ring: in the theme's text color, the ring red while recording.
         Rectangle {
             id: ring
             anchors.centerIn: parent
@@ -52,7 +52,7 @@ PlasmoidItem {
             color: "transparent"
             border.width: Math.max(1.5, Math.round(width * 0.09 * 2) / 2)
             border.color: root.recording ? "#da4453"
-                        : compact.containsMouse ? Kirigami.Theme.highlightColor : "white"
+                        : compact.containsMouse ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
 
             Kirigami.Icon {
                 anchors.centerIn: parent
@@ -60,7 +60,7 @@ PlasmoidItem {
                 height: width
                 source: "audio-input-microphone-symbolic"
                 isMask: true
-                color: "white"
+                color: Kirigami.Theme.textColor
             }
         }
     }
