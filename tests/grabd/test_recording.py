@@ -194,3 +194,65 @@ class StreamReplaced(GrabdTest):
         await self.replace(index=8, node=51, pid=999)
         await self.wait_for(lambda: self.item.state in self.g.FINISHED)
         self.assertEqual(len(self.rec.items), 2)
+
+
+class _Players:
+    """Stands in for grabd's MPRIS Players: whether the app still has the title."""
+    loaded = True
+
+    def has_media(self, pid, title):
+        return self.loaded
+
+    def title_for(self, pid):
+        return ""
+
+
+class StreamReplacedLate(StreamReplaced):
+    """After a long pause the new stream comes only once the player has
+    re-buffered: wait while the player still has the title loaded."""
+
+    async def asyncSetUp(self):
+        await super().asyncSetUp()
+        self.rec.players = _Players()
+
+    async def test_late_replacement(self):
+        self.streams.clear()
+        await self.rec.refresh_streams()
+        await asyncio.sleep(1.5)                       # 3 grace periods, the player has it
+        self.assertEqual(self.item.state, "recording")
+        await self.replace(index=8, node=51)
+        await asyncio.sleep(0.1)
+        self.assertEqual(self.item.stream.idx, 8)
+        self.assertEqual(list(self.rec.items.values()), [self.item])
+
+    async def test_player_closed(self):
+        self.streams.clear()
+        await self.rec.refresh_streams()
+        await asyncio.sleep(0.7)
+        self.assertEqual(self.item.state, "recording")
+        self.rec.players.loaded = False                # tab closed / other video
+        await self.wait_for(lambda: self.item.state in self.g.FINISHED)
+
+    async def test_ends_without_replacement(self):     # (inherited: no player here)
+        self.rec.players = None
+        await super().test_ends_without_replacement()
+
+    async def test_other_title_not_followed(self):
+        self.rec.players.loaded = False
+        await super().test_other_title_not_followed()
+
+    async def test_other_process_not_followed(self):
+        self.rec.players.loaded = False
+        await super().test_other_process_not_followed()
+
+
+class HasMedia(GrabdTest):
+    def test_match(self):
+        p = self.g.Players(None, lambda: None)
+        p.players["a"] = {"owner": ":1", "pid": "7731", "status": "Paused", "title": "x",
+                          "media": "КАК СВЯЩЕННАЯ ГОРА 1991"}
+        self.assertTrue(p.has_media("7731", "КАК СВЯЩЕННАЯ ГОРА 1991 - YouTube"))
+        self.assertFalse(p.has_media("7731", "Другое видео - YouTube"))
+        self.assertFalse(p.has_media("1", "КАК СВЯЩЕННАЯ ГОРА 1991 - YouTube"))
+        p.players["a"]["status"] = "Stopped"
+        self.assertFalse(p.has_media("7731", "КАК СВЯЩЕННАЯ ГОРА 1991 - YouTube"))

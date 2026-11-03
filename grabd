@@ -58,9 +58,11 @@ background noise, mixes both and writes a lossless FLAC with silence removed.
 If the input's source goes away or changes (mic unplugged and replugged, new
 default), it is relinked. Pause unlinks and saves an MP3
 snapshot; resume relinks and appends. When the stream disappears, a new
-stream of the same process with the same title within STREAM_GRACE seconds
-takes its place (Firefox replaces a stream paused for a few seconds when it
-resumes); otherwise the item is finalized (state encoding -> done/empty/failed) and stays until removed.
+stream of the same process with the same title takes its place (Firefox
+replaces a stream paused for a few seconds when it resumes, after
+re-buffering). grabd waits for one while the app's MPRIS player still has
+that title loaded (paused, buffering), else STREAM_GRACE seconds; then the
+item is finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
 
 Muted playback: the stream is linked into a private silent sink (grab_silent,
@@ -736,8 +738,10 @@ class Players:
         except Exception:
             self.players.pop(name, None)
         else:
+            meta = unwrap(meta.value)
             self.players[name] = {"owner": owner, "pid": str(pid), "status": status.value,
-                                  "title": self._title(unwrap(meta.value))}
+                                  "title": self._title(meta),
+                                  "media": (meta.get("xesam:title") or "").strip()}
         if notify:
             self.on_change()
 
@@ -752,6 +756,15 @@ class Players:
         if title and artist and artist.lower() not in title.lower():
             title = f"{artist} - {title}"
         return title
+
+    def has_media(self, pid, title):
+        """Whether a player of the process still has this title loaded
+        (playing, paused or buffering). Its title and a stream's may differ
+        a little: "Song" vs "Song - YouTube"."""
+        title = title.lower()
+        return any(p["pid"] == pid and p["media"] and p["status"] != "Stopped"
+                   and (p["media"].lower() in title or title in p["media"].lower())
+                   for p in self.players.values())
 
     def title_for(self, pid):
         """Title of the process's player; prefer one that is playing."""
@@ -993,17 +1006,24 @@ class Recorder:
 
     def _lose(self, item):
         """A recording's stream is gone: keep recording (silence, which isn't
-        saved) for STREAM_GRACE seconds in case a replacement appears (see
-        _adopt_replacements); then finalize."""
+        saved) in case a replacement appears (see _adopt_replacements): while
+        the app's player still has the title loaded (paused, or re-buffering
+        on resume), else for STREAM_GRACE seconds; then finalize."""
         if item.lost:
             return
         item.lost = True
+        print(f"grabd: {item.title!r}: stream gone; waiting for a new one", flush=True)
         loop = asyncio.get_running_loop()
 
-        def timeout():
-            if item.lost and item.stream is None and item.state in ACTIVE:
-                loop.create_task(self.finalize(item))
-        loop.call_later(STREAM_GRACE, timeout)
+        def check():
+            if not (item.lost and item.stream is None and item.state in ACTIVE):
+                return
+            if self.players and self.players.has_media(item.process, item.title):
+                loop.call_later(STREAM_GRACE, check)      # still loaded in the player
+                return
+            print(f"grabd: {item.title!r}: no new stream; finishing the recording", flush=True)
+            loop.create_task(self.finalize(item))
+        loop.call_later(STREAM_GRACE, check)
 
     def _adopt_replacements(self):
         """Give each lost recording the stream that replaced its old one: a
