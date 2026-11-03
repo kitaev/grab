@@ -60,10 +60,19 @@ default), it is relinked. Pause unlinks and saves an MP3
 snapshot; resume relinks and appends. When the stream disappears, a new
 stream of the same process with the same title takes its place (Firefox
 replaces a stream paused for a few seconds when it resumes, after
-re-buffering). grabd waits for one while the app's MPRIS player still has
-that title loaded (paused, buffering), else STREAM_GRACE seconds; then the
-item is finalized (state encoding -> done/empty/failed) and stays until removed.
+re-buffering; Zoom replaces its stream during a call). grabd waits for one
+while the app's MPRIS player still has that title loaded (paused,
+buffering); for a stream without a title of its own (a call: see Titles)
+while its app runs, up to CALL_GRACE seconds; else STREAM_GRACE seconds.
+Then the item is finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
+
+Titles: a stream's media.name, unless it is generic ("audio stream",
+Zoom's "playStream"); then the title of the app's MPRIS player; then the
+title of the app's topmost window (a KWin script reports window titles by
+process, see Windows); then the app's name. A recording titled from its
+window or app name gets the date and time it started appended ("Zoom
+Meeting, 3 Nov 18:55"): those titles repeat from call to call.
 
 Muted playback: the stream is linked into a private silent sink (grab_silent,
 so it keeps running) and WirePlumber's link to its playback device is deleted.
@@ -227,6 +236,7 @@ MIX = (f"[0:a]pan=stereo|c0=c0|c1=c1[stream];"
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
 STREAM_GRACE = 3.0         # a recorded stream gone: wait this long for its replacement
+CALL_GRACE = 60.0          # ... or this long for an untitled one (a call) while its app runs
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
 UPDATE_CHECK_INTERVAL = 5.0  # how often to check whether grabd itself was replaced
 EXIT_UPDATED = 75          # exit status asking systemd to start the new grabd (see grabd.service)
@@ -238,7 +248,7 @@ RUNTIME_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "grabd")
 
 EXCLUDE_APP_RE = ""        # apps never offered (regex on application.name)
 EXCLUDE_ROLE_RE = r"^(event|notification)$"
-GENERIC_RE = r"^(stream|firefox|audiostream|audio stream|playback|audio|output)$"
+GENERIC_RE = r"^(stream|firefox|audiostream|audio stream|playback|audio|output|playstream)$"
 
 BUS_NAME = "org.grab.Recorder"
 OBJ_PATH = "/org/grab/Recorder"
@@ -326,6 +336,18 @@ async def duration(path):
 def real_title(t):
     t = (t or "").strip().lower()
     return bool(t) and not re.match(GENERIC_RE, t)
+
+
+def process_alive(pid):
+    return bool(pid) and os.path.exists(f"/proc/{pid}")
+
+
+def parent_pid(pid):
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[1]   # after "pid (comm) state"
+    except (OSError, IndexError):
+        return ""
 
 
 def unwrap(d):
@@ -526,7 +548,7 @@ def route_ports(outs, ins, left, right):
 # ------------------------------------------------------------------ model
 
 class Stream:
-    def __init__(self, si, player_title=""):
+    def __init__(self, si, player_title="", window_title=""):
         p = si.get("properties", {})
         self.idx = si["index"]
         self.node = str(p.get("object.id"))
@@ -535,20 +557,29 @@ class Stream:
         self.process = Stream.pid(si)
         self.corked = si.get("corked", False)
         self.player_title = player_title   # from the app's MPRIS player, if any
+        self.window_title = window_title   # the app's topmost window's, if any
 
     @staticmethod
     def pid(si):
         return str(si.get("properties", {}).get("application.process.id", ""))
 
     @property
+    def title_source(self):
+        """Where the title comes from: media, player, window or app."""
+        if real_title(self.media):
+            return "media"
+        if self.player_title:
+            return "player"
+        return "window" if self.window_title else "app"
+
+    @property
     def has_title(self):
-        return real_title(self.media) or bool(self.player_title)
+        return self.title_source != "app"
 
     @property
     def title(self):
-        if real_title(self.media):
-            return self.media.strip()
-        return self.player_title or self.app
+        return {"media": self.media.strip(), "player": self.player_title,
+                "window": self.window_title, "app": self.app}[self.title_source]
 
     @property
     def offerable(self):
@@ -577,6 +608,11 @@ class Item:
         self.stream = stream
         self.title = stream.title if stream else title
         self.app = stream.app if stream else app
+        # the stream's title and where it came from (title may have the start
+        # time appended, see Titles); a replacement stream must match it
+        self.match_title = self.title
+        self.title_source = stream.title_source if stream else ""
+        self.stamped = False               # title has the start time appended
         self.process = stream.process if stream else ""   # the app's process id
         self.state = "available"
         self.busy = False
@@ -593,6 +629,7 @@ class Item:
         self.started = ""                  # ISO time the recording started
         self.recorded = False              # recorded by this grabd (not found by a scan)
         self.lost = False                  # recording, its stream gone: waiting for a new one
+        self.lost_at = 0.0                 # when (monotonic)
         self.input_desc = ""               # input as recorded, if no longer known (recovered)
         # recording internals
         self.sink = ""
@@ -773,6 +810,110 @@ class Players:
         return found[0]["title"] if found else ""
 
 
+# ------------------------------------------------------------------ window titles
+
+class Windows:
+    """Titles of apps' windows by process id, for streams with neither a
+    title of their own nor an MPRIS player (Zoom's "playStream"). A KWin
+    script reports the normal windows' process ids and titles, topmost
+    first, whenever they change; it calls grabd's unique bus name, which
+    isn't D-Bus activated: if grabd goes away without unloading it, the
+    calls just fail."""
+    PLUGIN = "grabd-windows"
+    PATH = "/org/grab/Windows"
+    SCRIPT = """
+function report() {
+    const list = [];
+    for (const w of workspace.stackingOrder.slice().reverse())
+        if (w.normalWindow && !w.skipTaskbar && w.caption)
+            list.push([String(w.pid), w.caption]);
+    callDBus(%(dest)s, %(path)s, %(iface)s, "Set", JSON.stringify(list));
+}
+function watch(w) { w.captionChanged.connect(report); }
+workspace.windowList().forEach(watch);
+workspace.windowAdded.connect(w => { watch(w); report(); });
+workspace.windowRemoved.connect(report);
+workspace.windowActivated.connect(report);
+report();
+"""
+
+    class Receiver(ServiceInterface):
+        def __init__(self, windows):
+            super().__init__("org.grab.Windows")
+            self.windows = windows
+
+        @method()
+        def Set(self, windows: "s"):
+            self.windows.set(windows)
+
+    def __init__(self, bus, on_change):
+        self.bus = bus
+        self.on_change = on_change
+        self.titles = {}                   # pid -> its topmost window's title
+        self.script = os.path.join(RUNTIME_DIR, f"windows_{os.getpid()}.js")
+
+    async def _kwin(self, path, iface, member, sig="", body=()):
+        reply = await self.bus.call(Message(destination="org.kde.KWin", path=path,
+                                            interface=iface, member=member,
+                                            signature=sig, body=list(body)))
+        if reply.message_type == MessageType.ERROR:
+            raise RuntimeError(reply.error_name)
+        return reply.body
+
+    async def start(self):
+        self.bus.export(self.PATH, Windows.Receiver(self))
+        os.makedirs(RUNTIME_DIR, exist_ok=True)
+        for old in glob.glob(os.path.join(RUNTIME_DIR, "windows_*.js")):   # crashed runs'
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+        with open(self.script, "w") as f:
+            f.write(self.SCRIPT % {k: json.dumps(v) for k, v in
+                                   {"dest": self.bus.unique_name, "path": self.PATH,
+                                    "iface": "org.grab.Windows"}.items()})
+        scripting = "org.kde.kwin.Scripting"
+        await self._kwin("/Scripting", scripting, "unloadScript", "s", [self.PLUGIN])
+        (sid,) = await self._kwin("/Scripting", scripting, "loadScript", "ss",
+                                  [self.script, self.PLUGIN])
+        if sid < 0:
+            raise RuntimeError("KWin didn't load the script")
+        await self._kwin(f"/Scripting/Script{sid}", "org.kde.kwin.Script", "run")
+
+    async def stop(self):
+        try:
+            await self._kwin("/Scripting", "org.kde.kwin.Scripting", "unloadScript", "s",
+                             [self.PLUGIN])
+        except Exception:
+            pass
+        try:
+            os.unlink(self.script)
+        except OSError:
+            pass
+
+    def set(self, windows):
+        try:
+            titles = {}
+            for pid, title in json.loads(windows):
+                titles.setdefault(str(pid), str(title).strip())
+        except (ValueError, TypeError):
+            return
+        if titles != self.titles:
+            self.titles = titles
+            self.on_change()
+
+    def title_for(self, pid):
+        """The title of the process's topmost window, or of its parent's
+        (and so on: an app's audio may come from a helper process)."""
+        for _ in range(4):
+            if not pid or pid in ("0", "1"):
+                return ""
+            if self.titles.get(pid):
+                return self.titles[pid]
+            pid = parent_pid(pid)
+        return ""
+
+
 # ------------------------------------------------------------------ echo cancellation
 
 class Aec:
@@ -915,6 +1056,7 @@ class Recorder:
         self.queue = EncodeQueue(self.encoded, self.tags_for)
         self.stopping = False
         self.players = None                # Players, once the bus is up
+        self.windows = None                # Windows, once the bus is up
         self.silent_module = None          # grab_silent, while any playback is muted
         self.meters = {}                   # item -> Meter, while meters are on
         self.aecs = {}                     # (input node, output node) -> Aec
@@ -975,7 +1117,8 @@ class Recorder:
         if self.stopping:
             return
         title_for = self.players.title_for if self.players else (lambda pid: "")
-        streams = {si["index"]: Stream(si, title_for(Stream.pid(si)))
+        window_for = self.windows.title_for if self.windows else (lambda pid: "")
+        streams = {si["index"]: Stream(si, title_for(Stream.pid(si)), window_for(Stream.pid(si)))
                    for si in await pactl_json("sink-inputs") if Stream.accept(si)}
 
         for idx, item in list(self.by_stream.items()):
@@ -993,8 +1136,9 @@ class Recorder:
                     self._lose(item)
             else:
                 item.stream = s
-                if item.state == "available" or s.has_title:
+                if (item.state == "available" or s.has_title) and not item.stamped:
                     item.title, item.app = s.title, s.app
+                    item.match_title, item.title_source = s.title, s.title_source
 
         for idx, s in streams.items():
             if idx not in self.by_stream and s.offerable:
@@ -1008,18 +1152,24 @@ class Recorder:
         """A recording's stream is gone: keep recording (silence, which isn't
         saved) in case a replacement appears (see _adopt_replacements): while
         the app's player still has the title loaded (paused, or re-buffering
-        on resume), else for STREAM_GRACE seconds; then finalize."""
+        on resume); for an untitled stream (a call) while its app runs, up to
+        CALL_GRACE seconds; else for STREAM_GRACE seconds; then finalize."""
         if item.lost:
             return
         item.lost = True
+        item.lost_at = time.monotonic()
         print(f"grabd: {item.title!r}: stream gone; waiting for a new one", flush=True)
         loop = asyncio.get_running_loop()
 
         def check():
             if not (item.lost and item.stream is None and item.state in ACTIVE):
                 return
-            if self.players and self.players.has_media(item.process, item.title):
+            if self.players and self.players.has_media(item.process, item.match_title):
                 loop.call_later(STREAM_GRACE, check)      # still loaded in the player
+                return
+            if (item.title_source in ("window", "app") and process_alive(item.process)
+                    and time.monotonic() - item.lost_at < CALL_GRACE):
+                loop.call_later(STREAM_GRACE, check)      # a call: its app may replace it
                 return
             print(f"grabd: {item.title!r}: no new stream; finishing the recording", flush=True)
             loop.create_task(self.finalize(item))
@@ -1028,7 +1178,7 @@ class Recorder:
     def _adopt_replacements(self):
         """Give each lost recording the stream that replaced its old one: a
         new stream (offered as an available item) of the same process with
-        the same title. Its item goes; the recording continues in the same
+        the same title (for untitled streams, calls: with no title either). Its item goes; the recording continues in the same
         file."""
         for item in list(self.items.values()):
             if not (item.lost and item.stream is None and item.state in ACTIVE):
@@ -1036,7 +1186,11 @@ class Recorder:
             new = next((c for c in self.items.values()
                         if c.state == "available" and c.stream and not c.pending
                         and not c.muted and c.stream.process == item.process
-                        and c.stream.app == item.app and c.stream.title == item.title), None)
+                        and c.stream.app == item.app
+                        and (c.stream.title == item.match_title
+                             # a call's window title may have changed meanwhile
+                             or (item.title_source in ("window", "app")
+                                 and c.stream.title_source in ("window", "app")))), None)
             if not new:
                 continue
             s = new.stream
@@ -1272,6 +1426,9 @@ class Recorder:
             item.flac = item.mp3 = ""
             self.changed()
             return
+        if item.title_source in ("window", "app"):   # "Zoom Meeting, 3 Nov 18:55"
+            item.title = f"{item.title}, {now.tm_mday} {time.strftime('%b %H:%M', now)}"
+            item.stamped = True
         item.state = "recording"
         self.changed()
 
@@ -1545,6 +1702,8 @@ class Recorder:
                 paths = [p for p in (mp3, item.flac) if p and os.path.exists(p)]
                 item.error = await discard(paths, permanently)
                 item.flac = item.mp3 = item.file = item.started = ""
+                if item.stamped:
+                    item.title, item.stamped = item.match_title, False
                 item.duration = 0.0
                 item.sink, item.sink_node, item.proc = "", None, None
                 if item.stream:
@@ -1889,6 +2048,11 @@ async def main():
         await rec.players.start()
     except Exception as e:
         print(f"grabd: MPRIS titles unavailable ({e})", flush=True)
+    rec.windows = Windows(bus, lambda: rec.later("streams", rec.refresh_streams))
+    try:
+        await rec.windows.start()
+    except Exception as e:
+        print(f"grabd: window titles unavailable ({e})", flush=True)
     await rec.refresh_inputs()
     await rec.refresh_streams()
 
@@ -1917,6 +2081,7 @@ async def main():
             await t
         except asyncio.CancelledError:
             pass
+    await rec.windows.stop()
     bus.disconnect()
     return status
 

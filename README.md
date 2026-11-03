@@ -136,6 +136,19 @@ Desktop's own chat picker, so you choose the chat or group there. Targets that
 need settings first, such as a Bluetooth device or a Nextcloud account, show
 them in a dialog.
 
+## Titles
+
+A recording is named after what's playing: the title the app gives its
+stream, or the title in its media controls (MPRIS), as the Media Player widget
+shows it. Apps that give neither, such as Zoom, whose stream is just called
+"playStream", get the title of their topmost window instead (KWin reports it),
+or else the app's name. Those titles repeat from call to call, so the
+recording's start time is added: "Zoom Meeting, 3 Nov 18:55".
+
+During a call Zoom sometimes replaces its stream, for example when the audio
+device changes. The recording follows the new stream: grabd waits up to a
+minute for it while the app is still running.
+
 ## How recordings are stored
 
 While a stream is recording, grabd writes a hidden `.<name>.flac` file. The
