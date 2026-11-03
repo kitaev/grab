@@ -36,6 +36,7 @@ QtObject {
     }
     property int recordingCount: 0
     property int finishedCount: 0
+    property int readyCount: 0             // saved recordings (done)
     property int busyCount: 0
     property var recordingTitles: []
 
@@ -94,7 +95,7 @@ QtObject {
         streams.clear();
         records.clear();
         inputs = [];
-        recordingCount = finishedCount = busyCount = 0;
+        recordingCount = finishedCount = readyCount = busyCount = 0;
         recordingTitles = [];
     }
 
@@ -103,6 +104,7 @@ QtObject {
         syncModel(records, list.filter(it => it.group === "finished"));
         recordingCount = list.filter(it => it.itemState === "recording").length;
         finishedCount = records.count;
+        readyCount = list.filter(it => it.itemState === "done").length;
         busyCount = list.filter(it => it.itemState === "encoding" || it.busy).length;
         recordingTitles = list.filter(it => it.itemState === "recording").map(it => it.title);
     }

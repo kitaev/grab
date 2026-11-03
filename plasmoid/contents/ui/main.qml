@@ -26,15 +26,14 @@ PlasmoidItem {
                    ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
 
     toolTipMainText: "Record What's Playing"
+    // "Recording: 1 of 3 streams" / "No Streams", then "Recordings: 2 ready" / "No Recordings"
     toolTipSubText: {
         if (!backend.available)
             return "Recorder service not running";
-        if (recording)
-            return "Recording:\n" + backend.recordingTitles.join("\n");
-        if (backend.count === 0)
-            return "No streams";
-        const busy = backend.busyCount;
-        return `${backend.count} item(s)` + (busy ? `, ${busy} encoding` : "");
+        const n = backend.streams.count;
+        const ready = backend.readyCount;
+        return [n ? `Recording: ${backend.recordingCount} of ${n} stream${n === 1 ? "" : "s"}` : "No Streams",
+                ready ? `Recordings: ${ready} ready` : "No Recordings"].join("\n");
     }
 
     compactRepresentation: MouseArea {
