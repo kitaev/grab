@@ -1,5 +1,5 @@
-// One grabd item: title and state, record/pause and file buttons, and the
-// microphone combobox on the row below.
+// One grabd item: title and state, record/pause and file buttons, and for
+// streams that can be recorded the microphone combobox on the row below.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -176,15 +176,15 @@ Item {
             }
         }
 
-        RowLayout {
+        RowLayout {                        // only for streams that can still be recorded
             spacing: Kirigami.Units.smallSpacing
             Layout.fillWidth: true
+            visible: row.controllable
 
             Kirigami.Icon {
                 source: "audio-input-microphone"
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: implicitWidth
-                opacity: micBox.enabled ? 1 : 0.5
             }
 
             PlasmaComponents3.ComboBox {
@@ -195,7 +195,6 @@ Item {
                 model: row.inputChoices
                 textRole: "text"
                 valueRole: "value"
-                enabled: row.controllable
                 currentIndex: row.inputChoices.findIndex(c => c.value === row.input)
                 displayText: currentIndex >= 0 ? currentText : row.input_description
                 onActivated: index => {
