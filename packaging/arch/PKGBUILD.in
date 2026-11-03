@@ -8,6 +8,7 @@ arch=('any')
 license=('GPL-3.0-or-later')
 depends=(
     'python' 'python-dbus-next'
+    'python-mutagen'                    # reads tags, removes entries in place
     'ffmpeg'                            # recording, encoding, tags
     'pipewire' 'pipewire-audio'         # pw-dump/pw-link/pw-metadata, pw-record, WebRTC echo canceller
     'pipewire-pulse' 'libpulse'         # pactl
@@ -15,7 +16,6 @@ depends=(
     'glib2'                             # gio trash
     'plasma-workspace' 'libplasma' 'kirigami'   # the tray widget
 )
-optdepends=('python-mutagen: read tags and remove entries in place (much faster)')
 install=grab-recorder.install
 source=("grab-$pkgver.tar.gz")
 sha256sums=('@SHA256@')
