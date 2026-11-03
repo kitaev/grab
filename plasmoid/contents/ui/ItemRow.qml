@@ -1,6 +1,6 @@
-// One grabd item: record/pause (or, for a recording, a file icon) left of the
-// title and state, file buttons on the right, and for streams that can be
-// recorded the microphone combobox on the row below.
+// One grabd item: the status line, then record/pause (or, for a recording, a
+// file icon) left of the title with file buttons on the right, and for
+// streams that can be recorded the microphone combobox below.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -94,6 +94,20 @@ Item {
         anchors.bottomMargin: Kirigami.Units.smallSpacing
         spacing: Kirigami.Units.smallSpacing
 
+        PlasmaComponents3.Label {          // status, above the title and starting where it starts
+            objectName: "statusLabel"
+            Layout.fillWidth: true
+            Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing
+            Layout.bottomMargin: -Kirigami.Units.smallSpacing
+            horizontalAlignment: Text.AlignLeft
+            text: row.stateText
+            elide: Text.ElideRight
+            font: Kirigami.Theme.smallFont
+            color: row.itemState === "failed" || row.error ? Kirigami.Theme.negativeTextColor
+                                                       : Kirigami.Theme.textColor
+            opacity: row.itemState === "failed" || row.error ? 1 : 0.7
+        }
+
         RowLayout {
             spacing: Kirigami.Units.smallSpacing
             Layout.fillWidth: true
@@ -162,15 +176,6 @@ Item {
                     maximumLineCount: 2
                     elide: Text.ElideRight
                     font.weight: row.itemState === "recording" ? Font.DemiBold : Font.Normal
-                }
-                PlasmaComponents3.Label {
-                    Layout.fillWidth: true
-                    text: row.stateText
-                    elide: Text.ElideRight
-                    font: Kirigami.Theme.smallFont
-                    color: row.itemState === "failed" || row.error ? Kirigami.Theme.negativeTextColor
-                                                               : Kirigami.Theme.textColor
-                    opacity: row.itemState === "failed" || row.error ? 1 : 0.7
                 }
             }
 
