@@ -8,6 +8,7 @@ import QtQuick.Dialogs
 import QtQuick.Layouts
 import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
+import org.kde.plasma.plasmoid
 import org.kde.plasma.workspace.dbus as DBus
 
 KCM.SimpleKCM {
@@ -63,6 +64,17 @@ KCM.SimpleKCM {
         type: Kirigami.MessageType.Error
         text: page.error
         position: Kirigami.InlineMessage.Position.Header
+    }
+
+    // the package version (build.sh/PKGBUILD write it into metadata.json)
+    footer: QQC2.Label {
+        readonly property string version: Plasmoid.metaData?.version ?? ""
+        visible: version !== ""
+        padding: Kirigami.Units.largeSpacing
+        horizontalAlignment: Text.AlignHCenter
+        text: "Record What's Playing " + version
+        font: Kirigami.Theme.smallFont
+        opacity: 0.7
     }
 
     Kirigami.FormLayout {
