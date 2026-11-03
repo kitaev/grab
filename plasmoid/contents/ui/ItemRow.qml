@@ -252,12 +252,12 @@ Item {
                             loops: Animation.Infinite
                             onRunningChanged: if (!running) { ring.opacity = 1; ring.scale = 1; }
                             ParallelAnimation {
-                                NumberAnimation { target: ring; property: "opacity"; to: 0.25; duration: 800; easing.type: Easing.InOutSine }
-                                NumberAnimation { target: ring; property: "scale"; to: 1.12; duration: 800; easing.type: Easing.InOutSine }
+                                NumberAnimation { target: ring; property: "opacity"; to: 0.25; duration: 1300; easing.type: Easing.InOutSine }
+                                NumberAnimation { target: ring; property: "scale"; to: 1.12; duration: 1300; easing.type: Easing.InOutSine }
                             }
                             ParallelAnimation {
-                                NumberAnimation { target: ring; property: "opacity"; to: 1; duration: 800; easing.type: Easing.InOutSine }
-                                NumberAnimation { target: ring; property: "scale"; to: 1; duration: 800; easing.type: Easing.InOutSine }
+                                NumberAnimation { target: ring; property: "opacity"; to: 1; duration: 1300; easing.type: Easing.InOutSine }
+                                NumberAnimation { target: ring; property: "scale"; to: 1; duration: 1300; easing.type: Easing.InOutSine }
                             }
                         }
                     }
