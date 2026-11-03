@@ -86,7 +86,7 @@ Item {
 
     readonly property var toggleAction: ({
         "available": {text: "Record", icon: "media-record"},
-        "recording": {text: "Pause", icon: "media-playback-pause"},
+        "recording": {text: "Pause", icon: ""},   // drawn: "recording" ring, see below
         "paused": {text: "Resume", icon: "media-record"},
     })[itemState] || {text: "Record", icon: "media-record"}
 
@@ -228,6 +228,31 @@ Item {
                     PlasmaComponents3.ToolTip.text: text
                     PlasmaComponents3.ToolTip.visible: hovered
                     PlasmaComponents3.ToolTip.delay: Kirigami.Units.toolTipDelay
+                }
+
+                Item {                     // while recording: a red dot inside a red ring
+                    objectName: "recordingIcon"
+                    anchors.centerIn: parent
+                    width: Kirigami.Units.iconSizes.smallMedium
+                    height: width
+                    visible: row.itemState === "recording" && !row.toggling
+                    opacity: toggleButton.opacity
+
+                    Rectangle {            // ring
+                        anchors.fill: parent
+                        anchors.margins: Math.round(parent.width * 0.08)
+                        radius: width / 2
+                        color: "transparent"
+                        border.width: Math.max(1.5, parent.width * 0.09)
+                        border.color: "#da4453"    // Breeze's media-record red
+                    }
+                    Rectangle {            // dot
+                        anchors.centerIn: parent
+                        width: Math.round(parent.width * 0.46)
+                        height: width
+                        radius: width / 2
+                        color: "#da4453"
+                    }
                 }
 
                 PlasmaComponents3.BusyIndicator {
