@@ -39,10 +39,10 @@ Item {
 
     implicitHeight: column.implicitHeight + column.anchors.topMargin + column.anchors.bottomMargin
 
-    // Buttons are taller than a text line: shift them up so they are centred on
-    // the title's first line rather than hanging below it.
-    FontMetrics { id: titleMetrics; font: titleLabel.font }
-    readonly property real buttonShift: -Math.max(0, (toggleButton.implicitHeight - titleMetrics.height) / 2)
+    // Buttons have padding around their icons: shift them up by it, so the icons'
+    // tops line up with the top of the title.
+    readonly property real buttonShift: -Math.max(0, (toggleButton.implicitHeight
+                                                      - Kirigami.Units.iconSizes.smallMedium) / 2)
     implicitWidth: column.implicitWidth
 
     function mmss(sec) {
@@ -120,8 +120,8 @@ Item {
             // as tall as with the mic icon, so selecting an input doesn't shift the layout
             Layout.minimumHeight: Kirigami.Units.iconSizes.small
             Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing
-            // gap to the title: about twice the space between title lines
-            Layout.bottomMargin: Kirigami.Units.smallSpacing / 2
+            // gap to the title: a bit more than the space between title lines
+            Layout.bottomMargin: 0
             spacing: 0
             readonly property bool alert: row.itemState === "failed" || row.error !== ""
             readonly property color textColor: alert ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
@@ -247,6 +247,8 @@ Item {
                 Layout.alignment: Qt.AlignTop
                 Layout.topMargin: row.buttonShift
                 icon.name: "view-more-symbolic"
+                icon.width: Kirigami.Units.iconSizes.smallMedium
+                icon.height: Kirigami.Units.iconSizes.smallMedium
                 text: "Actions"
                 display: PlasmaComponents3.AbstractButton.IconOnly
                 readonly property var menu: row.finished ? moreMenu : streamMenu
