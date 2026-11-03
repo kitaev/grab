@@ -2,6 +2,7 @@
 // tab (finished recordings), and a footer with the recordings folder and,
 // on Recordings, a "⋮" menu to remove all of them.
 import QtQuick
+import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents3
@@ -24,6 +25,46 @@ ColumnLayout {
                                               + Kirigami.Units.largeSpacing * 2))
 
     readonly property bool onRecords: tabs.currentIndex === 1
+
+    // Confirmation before files are deleted for good (Recorder.confirmRequested)
+    Connections {
+        target: view.recorder
+        function onConfirmRequested(title, message, action, proceed) {
+            confirmDialog.title = title;
+            confirmMessage.text = message;
+            confirmAction.text = action;
+            confirmDialog.proceed = proceed;
+            confirmDialog.open();
+        }
+    }
+
+    Kirigami.PromptDialog {
+        id: confirmDialog
+        objectName: "confirmDialog"
+        property var proceed: null
+        parent: view
+        standardButtons: QQC2.Dialog.Cancel
+        customFooterActions: [
+            Kirigami.Action {
+                id: confirmAction
+                icon.name: "edit-delete"
+                onTriggered: {
+                    const proceed = confirmDialog.proceed;
+                    confirmDialog.close();
+                    if (proceed)
+                        proceed();
+                }
+            }
+        ]
+        onClosed: proceed = null
+
+        QQC2.Label {                       // titles come from apps and web pages: plain text
+            id: confirmMessage
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+        }
+    }
 
     PlasmaComponents3.TabBar {
         id: tabs
@@ -112,7 +153,7 @@ ColumnLayout {
                     text: view.recorder.trash ? "Remove All Entries and Move to Trash"
                                               : "Remove All Entries and Delete Files"
                     icon.name: view.recorder.trash ? "user-trash" : "edit-delete"
-                    onTriggered: view.recorder.removeFinished(true)
+                    onTriggered: view.recorder.removeFinishedWithFiles()
                 }
             }
         }

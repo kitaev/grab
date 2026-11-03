@@ -82,6 +82,35 @@ QtObject {
     function setEchoCancel(id, on) { call("SetEchoCancel", [id, on]); }
     function removeRecord(id) { call("RemoveRecord", [id]); }
 
+    // Removing files: right away when they go to the Trash; when they are
+    // deleted for good, after confirmRequested (FullView asks) calls proceed.
+    signal confirmRequested(string title, string message, string action, var proceed)
+
+    function discardRecording(id, title) {
+        if (trash)
+            removeRecord(id);
+        else
+            confirmRequested("Delete Recording?",
+                             `The recording of “${title}” will be stopped and deleted permanently.`,
+                             "Delete", () => removeRecord(id));
+    }
+    function removeWithFile(id, title) {
+        if (trash)
+            remove(id, true);
+        else
+            confirmRequested("Delete File?", `“${title}” will be deleted permanently.`,
+                             "Delete", () => remove(id, true));
+    }
+    function removeFinishedWithFiles() {
+        const n = finishedCount;
+        if (trash)
+            removeFinished(true);
+        else
+            confirmRequested("Delete Files?",
+                             `${n === 1 ? "The recording" : `All ${n} recordings`} in the list will be deleted permanently.`,
+                             "Delete All", () => removeFinished(true));
+    }
+
     function apply(json) {
         let state;
         try {

@@ -110,7 +110,8 @@ There are two settings:
 - **Removed recordings:** move them to the Trash (the default) or delete them
   permanently. This applies to every menu item that removes a recording's
   files, and their labels say which one happens ("Remove Entry and Move to
-  Trash" or "Remove Entry and Delete File").
+  Trash" or "Remove Entry and Delete File"). Permanent deletes ask for
+  confirmation first.
 
 grabd keeps these settings itself, in `~/.config/grabd/settings.json`, so they
 are the same for every copy of the widget. Setting `GRAB_OUTDIR` in the unit's

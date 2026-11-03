@@ -581,6 +581,8 @@ class Item:
         self.module = None
         self.input_node = None             # source node the input is linked from now
         self.proc = None
+        self.proc_stopping = False         # grabd is stopping proc (ffmpeg) itself
+        self.ffmpeg_died = False           # proc exited on its own while recording
         self.flac = ""
         self.mp3 = ""
         self.stream_links = []
@@ -637,10 +639,18 @@ class EncodeQueue:
                 item, final = next(iter(self.pending.items()))
                 del self.pending[item]
                 self.current = item
-                ok, saved, sec = await encode_snapshot(item.flac, item.mp3, self.tags_for(item))
+                try:
+                    ok, saved, sec = await encode_snapshot(item.flac, item.mp3,
+                                                           self.tags_for(item))
+                except Exception as e:     # keep the queue going (and drain() working)
+                    print(f"grabd: encoding {item.flac} failed: {e!r}", flush=True)
+                    ok, saved, sec = False, False, 0.0
                 self.current = None
                 item.busy = item in self.pending
-                await self.on_done(item, final, ok, saved, sec)
+                try:
+                    await self.on_done(item, final, ok, saved, sec)
+                except Exception as e:
+                    print(f"grabd: after encoding {item.flac}: {e!r}", flush=True)
             self.idle.set()
 
 
@@ -1134,16 +1144,16 @@ class Recorder:
         item.sink = f"grab_{s.idx}_{next(self.counter)}"
         now = time.localtime()
         item.started = time.strftime("%Y-%m-%dT%H:%M:%S", now)
-        base = f"{time.strftime('%Y-%m-%d_%H-%M-%S', now)}_{fname(item.title)}"
         item.recorded = True
-        item.flac = os.path.join(SETTINGS.outdir, f".{base}.flac")
-        item.mp3 = os.path.join(SETTINGS.outdir, f"{base}.mp3")
+        item.flac, item.mp3 = self._new_paths(
+            f"{time.strftime('%Y-%m-%d_%H-%M-%S', now)}_{fname(item.title)}")
         item.module = await self._load_sink(item.sink, "Grab")
         if not item.module:
             item.error = "could not create sink"
             self.changed()
             return
         item.sink_node = await self._sink_node(item.sink)
+        item.proc_stopping = item.ffmpeg_died = False
         item.proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-loglevel", "error",
             "-f", "pulse", "-channels", "4", "-name", "Grab", "-stream_name", f"Grab: {item.title}",
@@ -1151,6 +1161,7 @@ class Recorder:
             "-filter_complex", MIX, *tag_args(self.tags_for(item)),
             "-c:a", "flac", "-flush_packets", "1", item.flac,
             stdin=asyncio.subprocess.DEVNULL, env=FFMPEG_ENV)
+        asyncio.get_running_loop().create_task(self._watch_ffmpeg(item, item.proc))
         item.stream_links = (await self._link(s.node, item.sink_node, STREAM_CH)
                              if item.sink_node else [])
         if not item.stream_links:
@@ -1162,8 +1173,42 @@ class Recorder:
             self.changed()
             return
         await self._link_input(item)
+        if item.proc.returncode is not None:   # it failed right away (no await from
+            item.error = f"could not start recording: ffmpeg exited ({item.proc.returncode})"
+            await self._teardown(item)         # here to the state change: the watcher
+            if os.path.exists(item.flac):      # sees either this or "recording")
+                os.remove(item.flac)
+            item.flac = item.mp3 = ""
+            self.changed()
+            return
         item.state = "recording"
         self.changed()
+
+    def _new_paths(self, base):
+        """(FLAC, MP3) paths for a new recording that no file or other item
+        uses: the same title started twice in a second gets "base (2)"."""
+        taken = {p for i in self.items.values() for p in (i.flac, i.mp3, i.file) if p}
+        for n in itertools.count(1):
+            name = base if n == 1 else f"{base} ({n})"
+            flac = os.path.join(SETTINGS.outdir, f".{name}.flac")
+            mp3 = os.path.join(SETTINGS.outdir, f"{name}.mp3")
+            if not any(p in taken or os.path.lexists(p) for p in (flac, mp3)):
+                return flac, mp3
+
+    async def _watch_ffmpeg(self, item, proc):
+        """End the recording if its ffmpeg exits on its own (disk full, a
+        file it can't write, ...): otherwise it would look like it's still
+        recording."""
+        rc = await proc.wait()
+        if item.proc is not proc or item.proc_stopping or self.stopping:
+            return
+        print(f"grabd: ffmpeg for {item.flac} exited with {rc}", flush=True)
+        item.error = f"recording stopped: ffmpeg exited ({rc})"
+        item.ffmpeg_died = True
+        if item.state in ACTIVE:
+            await self.finalize(item)
+        else:
+            self.changed()             # still starting: _start sees the error
 
     async def set_input(self, item, inp):
         async with item.op:
@@ -1175,6 +1220,7 @@ class Recorder:
     async def _teardown(self, item):
         await self._unlink(item.stream_links)
         await self._unlink_input(item)
+        item.proc_stopping = True
         if item.proc and item.proc.returncode is None:
             item.proc.send_signal(signal.SIGINT)          # ffmpeg finalizes the FLAC
             try:
@@ -1433,7 +1479,10 @@ class Recorder:
         if final:
             if ok and os.path.exists(item.flac):
                 os.remove(item.flac)
-            item.state = "failed" if not ok else ("done" if item.file else "empty")
+            if not ok or (item.ffmpeg_died and not item.file):   # say why
+                item.state = "failed"
+            else:
+                item.state = "done" if item.file else "empty"
         self.changed()
 
     # ---- startup / shutdown
@@ -1634,7 +1683,10 @@ async def subscribe(rec):
 
 async def scan_loop(rec):
     while True:
-        await rec.scan_files()
+        try:
+            await rec.scan_files()
+        except Exception as e:             # try again next time
+            print(f"grabd: scanning {SETTINGS.outdir} failed: {e!r}", flush=True)
         await asyncio.sleep(SCAN_INTERVAL)
 
 

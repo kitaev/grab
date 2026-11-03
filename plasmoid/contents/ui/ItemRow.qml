@@ -430,7 +430,7 @@ Item {
                         text: row.recorder.trash ? "Move Recording to Trash" : "Delete Recording"
                         icon.name: row.recorder.trash ? "user-trash" : "edit-delete"
                         enabled: row.file !== "" && row.active && !row.toggling
-                        onTriggered: row.recorder.removeRecord(row.itemId)
+                        onTriggered: row.recorder.discardRecording(row.itemId, row.title)
                     }
                 }
 
@@ -453,7 +453,7 @@ Item {
                         text: row.recorder.trash ? "Remove Entry and Move to Trash"
                                                  : "Remove Entry and Delete File"
                         icon.name: row.recorder.trash ? "user-trash" : "edit-delete"
-                        onTriggered: row.recorder.remove(row.itemId, true)
+                        onTriggered: row.recorder.removeWithFile(row.itemId, row.title)
                     }
                 }
             }
