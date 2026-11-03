@@ -81,6 +81,10 @@ OUTDIR = os.path.expanduser("~/Music/grab")
 AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
       "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
 MIC_GATE_DB = -45          # input quieter than this is muted, so its noise isn't "sound"
+# ffmpeg's capture stream: WirePlumber shouldn't remember its volume or pin it
+# to a device (libpulse reads extra stream properties from PULSE_PROP)
+FFMPEG_ENV = {**os.environ, "PULSE_PROP": "state.restore-props=false state.restore-target=false"}
+
 # The recording sink's channels: the stream in FL/FR, the input in FC/LFE (names
 # don't matter on a hidden sink). This is the map ffmpeg's 4-channel pulse
 # capture uses, so nothing is remixed on the way in.
@@ -704,7 +708,8 @@ class Recorder:
             "pactl", "load-module", "module-null-sink",
             f"sink_name={name}", "channels=4", f"channel_map={SINK_MAP}",
             f"sink_properties='node.virtual=true device.description=\"{description}\" "
-            "device.icon_name=\"media-record\"'")
+            # a new sink per recording: don't let WirePlumber remember each one
+            "device.icon_name=\"media-record\" state.restore-props=false'")
         return out.strip() if rc == 0 else None
 
     # ---- actions
@@ -762,7 +767,7 @@ class Recorder:
             "-i", f"{item.sink}.monitor",
             "-filter_complex", MIX, *tag_args(self.tags_for(item)),
             "-c:a", "flac", "-flush_packets", "1", item.flac,
-            stdin=asyncio.subprocess.DEVNULL)
+            stdin=asyncio.subprocess.DEVNULL, env=FFMPEG_ENV)
         item.stream_links = (await self._link(s.node, item.sink_node, STREAM_CH)
                              if item.sink_node else [])
         if not item.stream_links:
