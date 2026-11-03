@@ -25,7 +25,7 @@ PlasmoidItem {
     Plasmoid.status: !backend.available || recording || backend.count > 0
                    ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
 
-    toolTipMainText: "Grab"
+    toolTipMainText: "Record What's Playing"
     toolTipSubText: {
         if (!backend.available)
             return "Recorder service not running";

@@ -2,7 +2,7 @@
     "KPackageStructure": "Plasma/Applet",
     "KPlugin": {
         "Id": "org.grab.recorder",
-        "Name": "Grab",
+        "Name": "Record What's Playing",
         "Description": "Record application audio streams (front end for grabd)",
         "Icon": "media-record",
         "Category": "Multimedia",
