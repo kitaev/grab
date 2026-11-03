@@ -109,8 +109,9 @@ ColumnLayout {
                     onTriggered: view.recorder.removeFinished(false)
                 }
                 PlasmaComponents3.MenuItem {
-                    text: "Remove All Entries and Data"
-                    icon.name: "user-trash"
+                    text: view.recorder.trash ? "Remove All Entries and Move to Trash"
+                                              : "Remove All Entries and Delete Files"
+                    icon.name: view.recorder.trash ? "user-trash" : "edit-delete"
                     onTriggered: view.recorder.removeFinished(true)
                 }
             }

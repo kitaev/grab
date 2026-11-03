@@ -1,7 +1,8 @@
 // One grabd item: the status line, then record/pause (or, for a recording, a
 // file icon) left of the title and a "⋮" actions menu on the right. Streams'
-// menu: Microphone (the input mixed in), Save Now, Show in Folder, Remove
-// Recording; recordings': Show in Folder, Remove Entry (and Data). The status
+// menu: Microphone (the input mixed in), Save Now, Show in Folder, Move to
+// Trash or Delete Recording; recordings': Show in Folder, Remove Entry (and Move
+// to Trash or Delete File, per the "trash" setting). The status
 // line names the selected input.
 import QtQuick
 import QtQuick.Layouts
@@ -426,8 +427,8 @@ Item {
                     PlasmaComponents3.MenuSeparator {}
                     PlasmaComponents3.MenuItem {
                         objectName: "removeRecord"
-                        text: "Remove Recording"
-                        icon.name: "user-trash"
+                        text: row.recorder.trash ? "Move Recording to Trash" : "Delete Recording"
+                        icon.name: row.recorder.trash ? "user-trash" : "edit-delete"
                         enabled: row.file !== "" && row.active && !row.toggling
                         onTriggered: row.recorder.removeRecord(row.itemId)
                     }
@@ -449,8 +450,9 @@ Item {
                         onTriggered: row.recorder.remove(row.itemId, false)
                     }
                     PlasmaComponents3.MenuItem {
-                        text: "Remove Entry and Data"
-                        icon.name: "user-trash"
+                        text: row.recorder.trash ? "Remove Entry and Move to Trash"
+                                                 : "Remove Entry and Delete File"
+                        icon.name: row.recorder.trash ? "user-trash" : "edit-delete"
                         onTriggered: row.recorder.remove(row.itemId, true)
                     }
                 }

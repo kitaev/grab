@@ -17,6 +17,8 @@ QtObject {
     readonly property int count: streams.count + records.count
     property var inputs: []                // [{name, description, default}]
     property string folder: ""             // grabd's recordings folder
+    property bool trash: true              // grabd's "trash" setting: removed files go to the
+                                           // Trash (true) or are deleted (false)
 
     // Level meters (see ItemRow): grabd measures each stream at its outputs
     // while `monitoring` (the popup is open) and sends {item id: level}.
@@ -60,6 +62,15 @@ QtObject {
 
     function refresh() {
         call("GetState", [], reply => apply(String(plain(reply.value))));
+        call("GetSettings", [], reply => applySettings(String(plain(reply.value))));
+    }
+
+    function applySettings(json) {
+        try {
+            trash = JSON.parse(json).trash !== false;
+        } catch (e) {
+            console.warn("grab: bad settings", e);
+        }
     }
 
     function toggle(id) { call("Toggle", [id]); }
@@ -158,6 +169,9 @@ QtObject {
         iface: rec.iface
         function dbusStateChanged(json) {
             rec.apply(String(rec.plain(json)));
+        }
+        function dbusSettingsChanged(json) {
+            rec.applySettings(String(rec.plain(json)));
         }
         function dbusLevels(json) {
             if (rec.monitoring)

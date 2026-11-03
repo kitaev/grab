@@ -108,8 +108,9 @@ There are two settings:
   `~/.config/user-dirs.dirs`), usually `~/Music/grab`. Recordings already made
   stay where they are, and the list shows the recordings in the chosen folder.
 - **Removed recordings:** move them to the Trash (the default) or delete them
-  permanently. This applies to *Remove Recording* and *Remove Entry and
-  Data*.
+  permanently. This applies to every menu item that removes a recording's
+  files, and their labels say which one happens ("Remove Entry and Move to
+  Trash" or "Remove Entry and Delete File").
 
 grabd keeps these settings itself, in `~/.config/grabd/settings.json`, so they
 are the same for every copy of the widget. Setting `GRAB_OUTDIR` in the unit's

@@ -130,7 +130,7 @@ KCM.SimpleKCM {
         }
         QQC2.Label {
             Layout.fillWidth: true
-            text: "Applies to Remove Recording and Remove Entry and Data."
+            text: "Applies when a menu item removes a recording's files."
             wrapMode: Text.Wrap
             font: Kirigami.Theme.smallFont
             opacity: 0.7
