@@ -1,0 +1,16 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Id": "org.grab.recorder",
+        "Name": "Grab",
+        "Description": "Record application audio streams (front end for grabd)",
+        "Icon": "media-record",
+        "Category": "Multimedia",
+        "License": "GPL-3.0-or-later",
+        "Version": "1.0",
+        "Authors": [{ "Name": "razrab", "Email": "kitaev@gmail.com" }]
+    },
+    "X-Plasma-API-Minimum-Version": "6.0",
+    "X-Plasma-NotificationArea": "true",
+    "X-Plasma-NotificationAreaCategory": "ApplicationStatus"
+}

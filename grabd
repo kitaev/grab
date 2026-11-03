@@ -12,6 +12,10 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   RemoveFinished(b with_data)           Remove() every finished item
   signal ItemsChanged(a(sa{sv}))        full item list after any change
   signal InputsChanged(a(ssb))          full input list after any change
+  GetState()             -> s          JSON {"items": [{properties}], "inputs":
+                                        [{"name", "description", "default"}], "folder"}
+  signal StateChanged(s)                GetState() after any change (for clients
+                                        that handle JSON more easily than variants)
 
 Item properties: id, title, app, state, busy, stream, input, input_description,
 file, duration, error.
@@ -459,6 +463,14 @@ class Recorder:
     def _do_emit(self):
         self._emit = None
         self.iface.ItemsChanged()
+        self.iface.StateChanged()
+
+    def state_json(self):
+        items = [{k: v.value for k, v in i.props(self.input_description(i.input)).items()}
+                 for i in self.items.values()]
+        inputs = [{"name": n, "description": d, "default": is_def}
+                  for n, d, is_def in self.input_list()]
+        return json.dumps({"items": items, "inputs": inputs, "folder": OUTDIR}, ensure_ascii=False)
 
     def item_list(self):
         return [[i.id, i.props(self.input_description(i.input))] for i in self.items.values()]
@@ -837,6 +849,14 @@ class RecorderInterface(ServiceInterface):
     @dbus_signal()
     def InputsChanged(self) -> "a(ssb)":
         return self.rec.input_list()
+
+    @method()
+    def GetState(self) -> "s":
+        return self.rec.state_json()
+
+    @dbus_signal()
+    def StateChanged(self) -> "s":
+        return self.rec.state_json()
 
 
 # ------------------------------------------------------------------ main
