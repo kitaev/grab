@@ -49,6 +49,7 @@ QtObject {
     function remove(id, withData) { call("Remove", [id, withData]); }
     function removeFinished(withData) { call("RemoveFinished", [withData]); }
     function saveNow(id) { call("SaveNow", [id]); }
+    function setPlaybackMuted(id, muted) { call("SetPlaybackMuted", [id, muted]); }
     function removeRecord(id) { call("RemoveRecord", [id]); }
 
     function apply(json) {

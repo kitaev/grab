@@ -11,6 +11,8 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
                                         with_data also moves its files to the Trash
   RemoveFinished(b with_data)           Remove() every finished item
   SaveNow(s id)                         save an MP3 snapshot of a recording/paused item now
+  SetPlaybackMuted(s id, b muted)       stop/resume playing a stream on its device; it is
+                                        still recorded (see "Muted playback" below)
   RemoveRecord(s id)                    discard a recording/paused item's recording: stop it,
                                         move its MP3 and FLAC to the Trash; the stream is
                                         offered again
@@ -21,12 +23,13 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   signal StateChanged(s)                GetState() after any change (for clients
                                         that handle JSON more easily than variants)
 
-Item properties: id, title, app, state, busy, pending, stream, input,
+Item properties: id, title, app, state, busy, pending, muted, stream, input,
 input_description, file, duration, error.
   state:   available | recording | paused | encoding | done | empty | failed
   busy:    an MP3 snapshot/final encode is queued or running for this item
   pending: a Toggle is in progress (starting, pausing or resuming); further
            Toggles are ignored until it is done
+  muted:   the stream's playback is muted (SetPlaybackMuted)
   error:   why the last start failed (state stays available), or for
            finished items what went wrong
 
@@ -40,6 +43,13 @@ default), it is relinked. Pause unlinks and saves an MP3
 snapshot; resume relinks and appends. When the stream disappears the item is
 finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
+
+Muted playback: the stream is linked into a private silent sink (grab_silent,
+so it keeps running) and WirePlumber's link to its playback device is deleted.
+The stream's "Play on" metadata is not touched, so WirePlumber saves nothing
+and other streams of the same app are unaffected. Unmuting points the stream's
+target at the silent sink and then at its device (or the default output), so
+WirePlumber links it again, and finally restores the target metadata as it was.
 
 Metadata lives in the files' tags (ID3 in the MP3, Vorbis comments in the
 FLAC): title, date (start time), and grab=1 (the marker), grab_app,
@@ -301,6 +311,28 @@ async def node_ports():
     return nodes
 
 
+async def pw_graph():
+    """(nodes: {id: props}, links: [(out node, out port, in node, in port)]) from pw-dump."""
+    rc, out = await run("pw-dump")
+    try:
+        objs = json.loads(out)
+    except ValueError:
+        return {}, []
+    nodes = {str(o["id"]): o.get("info", {}).get("props", {})
+             for o in objs if o.get("type") == "PipeWire:Interface:Node"}
+    links = [tuple(str(o["info"][k]) for k in ("output-node-id", "output-port-id",
+                                                "input-node-id", "input-port-id"))
+             for o in objs if o.get("type") == "PipeWire:Interface:Link"]
+    return nodes, links
+
+
+async def stream_target(node):
+    """The stream's "target.object" in the default metadata ("Play on"), or None."""
+    rc, out = await run("pw-metadata", "-n", "default", node, "target.object")
+    m = re.search(r"key:'target\.object' value:'([^']*)'", out)
+    return m[1] if m else None
+
+
 def route_ports(outs, ins, left, right):
     """Pairs (out port, in port) sending each source channel to the left or
     right one of the target channels: a single channel, mono or centre goes to
@@ -378,6 +410,9 @@ class Item:
         self.state = "available"
         self.busy = False
         self.pending = False               # a Toggle is in progress
+        self.muted = False                 # playback muted (SetPlaybackMuted)
+        self.silent_links = []             # stream -> grab_silent while muted
+        self.playback_node = None          # the device it played on before muting
         self.input = ""                    # "" none, "default", or source name
         self.file = ""
         self.duration = 0.0
@@ -404,6 +439,7 @@ class Item:
             "state": Variant("s", self.state),
             "busy": Variant("b", self.busy),
             "pending": Variant("b", self.pending),
+            "muted": Variant("b", self.muted),
             "stream": Variant("b", self.stream is not None),
             "input": Variant("s", self.input),
             "input_description": Variant("s", input_desc),
@@ -553,6 +589,7 @@ class Recorder:
         self.queue = EncodeQueue(self.encoded, self.tags_for)
         self.stopping = False
         self.players = None                # Players, once the bus is up
+        self.silent_module = None          # grab_silent, while any playback is muted
         self._emit = None
         self._timers = {}
 
@@ -612,9 +649,12 @@ class Recorder:
 
         for idx, item in list(self.by_stream.items()):
             s = streams.get(idx)
-            if s is None or (item.state == "available" and not s.offerable):
+            if s is None or (item.state == "available" and not s.offerable and not item.muted):
                 del self.by_stream[idx]
                 item.stream = None
+                if item.muted:             # gone while muted: nothing to restore
+                    item.muted, item.silent_links, item.playback_node = False, [], None
+                    asyncio.get_running_loop().create_task(self._drop_silent_sink())
                 if item.state == "available":
                     self.items.pop(item.id, None)
                 elif item.state in ACTIVE:
@@ -836,6 +876,75 @@ class Recorder:
         for item in list(self.items.values()):
             await self.remove(item, with_data)
 
+    # ---- muted playback
+
+    async def _silent_sink(self):
+        """Node id of grab_silent, loading it if needed."""
+        if not self.silent_module:
+            rc, out = await run(
+                "pactl", "load-module", "module-null-sink", "sink_name=grab_silent", "channels=2",
+                "sink_properties='node.virtual=true device.description=\"Grab (muted playback)\" "
+                "device.icon_name=\"audio-volume-muted\" state.restore-props=false'")
+            if rc != 0:
+                return None
+            self.silent_module = out.strip()
+        return await self._sink_node("grab_silent")
+
+    async def _drop_silent_sink(self):
+        if self.silent_module and not any(i.muted for i in self.items.values()):
+            await run("pactl", "unload-module", self.silent_module)
+            self.silent_module = None
+
+    async def set_playback_muted(self, item, muted):
+        async with item.op:
+            s = item.stream
+            if not s or item.muted == muted or self.items.get(item.id) is not item:
+                return
+            item.error = ""
+            if muted:
+                silent = await self._silent_sink()
+                item.silent_links = await self._link(s.node, silent, ("FL", "FR")) if silent else []
+                if not item.silent_links:
+                    item.error = "could not mute playback"
+                else:
+                    # drop the links to the playback device; keep ours (recording, silent)
+                    nodes, links = await pw_graph()
+                    keep = {str(item.sink_node), str(silent)}
+                    item.playback_node = None
+                    for onode, oport, inode, iport in links:
+                        if onode == str(s.node) and inode not in keep:
+                            item.playback_node = inode
+                            await run("pw-link", "-d", oport, iport)
+                    item.muted = True
+            else:
+                await self._restore_playback(s.node, item.silent_links, item.playback_node)
+                item.muted, item.silent_links, item.playback_node = False, [], None
+            self.changed()
+        if not muted:
+            await self._drop_silent_sink()
+
+    async def _restore_playback(self, stream_node, silent_links, device=None):
+        """Undo a mute: WirePlumber still thinks the stream is linked to its old
+        device, so setting the target to that device does nothing. Point it at
+        the silent sink (WirePlumber moves it), then at the device (or the
+        default output), then put the target metadata back as it was."""
+        stream_node = str(stream_node)
+        orig = await stream_target(stream_node)
+        await self._unlink(silent_links)
+        nodes, _links = await pw_graph()
+        serial = lambda name: next((p.get("object.serial") for p in nodes.values()
+                                    if p.get("node.name") == name), None)
+        if device not in nodes:
+            rc, out = await run("pactl", "get-default-sink")
+            device = next((i for i, p in nodes.items() if p.get("node.name") == out.strip()), None)
+        silent, back = serial("grab_silent"), orig or (nodes[device].get("object.serial") if device else None)
+        for value in (silent, back):
+            if value:
+                await run("pw-metadata", "-n", "default", stream_node, "target.object", str(value), "Spa:Id")
+                await asyncio.sleep(0.3)
+        if orig is None:
+            await run("pw-metadata", "-n", "default", "-d", stream_node, "target.object")
+
     def save_now(self, item):
         if item.state in ACTIVE and item.flac:
             self.queue.request(item)
@@ -928,9 +1037,19 @@ class Recorder:
     # ---- startup / shutdown
 
     async def cleanup_leftovers(self):
+        # streams a previous grabd left muted would stall once grab_silent goes
+        nodes, links = await pw_graph()
+        silent = next((i for i, p in nodes.items() if p.get("node.name") == "grab_silent"), None)
+        if silent:
+            muted = {}
+            for onode, oport, inode, iport in links:
+                if inode == silent:
+                    muted.setdefault(onode, []).append((oport, iport))
+            for stream_node, pairs in muted.items():
+                await self._restore_playback(stream_node, pairs)
         rc, out = await run("pactl", "list", "short", "modules")
         for line in out.splitlines():
-            if "module-null-sink" in line and re.search(r"sink_name=grab_\d", line):
+            if "module-null-sink" in line and re.search(r"sink_name=grab_(\d|silent\b)", line):
                 await run("pactl", "unload-module", line.split()[0])
 
     async def recover_orphans(self):
@@ -953,6 +1072,8 @@ class Recorder:
         if self.stopping:
             return
         self.stopping = True
+        for item in [i for i in self.items.values() if i.muted]:
+            await self.set_playback_muted(item, False)
         await asyncio.gather(*(self.finalize(i) for i in list(self.items.values())
                                if i.state in ACTIVE), return_exceptions=True)
         await self.queue.drain()
@@ -1006,6 +1127,12 @@ class RecorderInterface(ServiceInterface):
         item = self._item(item_id)
         if item:
             self.rec.save_now(item)
+
+    @method()
+    def SetPlaybackMuted(self, item_id: "s", muted: "b"):
+        item = self._item(item_id)
+        if item:
+            self._spawn(self.rec.set_playback_muted(item, muted))
 
     @method()
     def RemoveRecord(self, item_id: "s"):

@@ -20,6 +20,7 @@ Item {
     required property string itemState
     required property bool busy
     required property bool pending
+    required property bool muted
     required property bool stream
     required property string input
     required property string input_description
@@ -72,6 +73,8 @@ Item {
         const parts = [];
         if (itemState === "paused" && file)
             parts.push(`saved ${mmss(duration)}`);
+        if (muted && !finished)
+            parts.push("playback muted");
         if (error && itemState !== "failed")    // failed already says why
             parts.push(error);
         if (busy && active)
@@ -286,6 +289,18 @@ Item {
                             }
                             onObjectAdded: (index, object) => micMenu.insertItem(index, object)
                             onObjectRemoved: (index, object) => micMenu.removeItem(object)
+                        }
+                    }
+                    PlasmaComponents3.MenuItem {
+                        objectName: "mutePlayback"
+                        text: "Mute Playback"
+                        icon.name: "audio-volume-muted"
+                        checkable: true
+                        checked: row.muted
+                        enabled: row.stream && !row.finished
+                        onTriggered: {
+                            row.recorder.setPlaybackMuted(row.itemId, !row.muted);
+                            checked = Qt.binding(() => row.muted);   // grabd's state decides
                         }
                     }
                     PlasmaComponents3.MenuItem {
