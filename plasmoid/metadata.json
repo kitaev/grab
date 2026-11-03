@@ -4,7 +4,7 @@
         "Id": "org.grab.recorder",
         "Name": "Record What's Playing",
         "Description": "Record application audio streams (front end for grabd)",
-        "Icon": "media-record",
+        "Icon": "grab-recorder-symbolic",
         "Category": "Multimedia",
         "License": "GPL-3.0-or-later",
         "Version": "1.0",

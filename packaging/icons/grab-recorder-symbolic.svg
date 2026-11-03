@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+    <!-- Tray icon, drawn like Breeze's media-playback-*-symbolic status icons:
+         a 16 px ring with a 1 px line around a small symbol (a microphone). -->
+    <style type="text/css" id="current-color-scheme">.ColorScheme-Text { color: #fcfcfc; } </style>
+    <g class="ColorScheme-Text" fill="currentColor">
+        <path d="m11 3a8 8 0 0 0 -8 8 8 8 0 0 0 8 8 8 8 0 0 0 8-8 8 8 0 0 0 -8-8zm0 1a7 7 0 0 1 7 7 7 7 0 0 1 -7 7 7 7 0 0 1 -7-7 7 7 0 0 1 7-7z"/>
+        <rect x="9.75" y="6.75" width="2.5" height="4.5" rx="1.25"/>
+        <path d="m8.5 9.75v1a2.5 2.5 0 0 0 5 0v-1h-1v1a1.5 1.5 0 0 1 -3 0v-1z"/>
+        <rect x="10.5" y="13" width="1" height="1.5"/>
+        <rect x="9.5" y="14.25" width="3" height="1"/>
+    </g>
+</svg>

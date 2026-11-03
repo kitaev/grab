@@ -1,5 +1,5 @@
 // Grab: system tray widget for the grabd recording service. A microphone in a
-// ring (red while recording) opens a popup with a row per stream: record/pause, the
+// ring (the ring red while recording) opens a popup with a row per stream: record/pause, the
 // microphone to mix in, and for finished recordings Show in folder / Remove.
 // Status follows "shown when relevant": passive with nothing to show, active
 // otherwise.
@@ -19,7 +19,10 @@ PlasmoidItem {
 
     readonly property bool recording: backend.recordingCount > 0
 
-    Plasmoid.icon: "audio-input-microphone"
+    // Drawn by the tray like the Media Player's icon (the default compact
+    // representation): Breeze-style symbolic icons, a microphone in a ring,
+    // the ring red while recording (packaging/icons, installed to hicolor).
+    Plasmoid.icon: recording ? "grab-recorder-recording-symbolic" : "grab-recorder-symbolic"
     // Active (not NeedsAttention) while recording: the tray animates needs-attention
     // icons, and the red ring already says we're recording.
     Plasmoid.status: !backend.available || recording || backend.count > 0
@@ -34,43 +37,6 @@ PlasmoidItem {
         const ready = backend.readyCount;
         return [n ? `Recording: ${backend.recordingCount} of ${n} stream${n === 1 ? "" : "s"}` : "No Streams",
                 ready ? `Recordings: ${ready} ready` : "No Recordings"].join("\n");
-    }
-
-    compactRepresentation: MouseArea {
-        id: compact
-        hoverEnabled: true
-        acceptedButtons: Qt.LeftButton
-        onClicked: root.expanded = !root.expanded
-
-        // A microphone in a ring, like Breeze's media-playback-* icons (the
-        // Media Player's tray icon): on their 22 px grid a 16 px ring around a
-        // small symbol. Theme text colour; the ring is red
-        // while recording.
-        Item {
-            id: icon
-            anchors.centerIn: parent
-            width: Math.min(compact.width, compact.height)
-            height: width
-
-            Rectangle {
-                anchors.centerIn: parent
-                width: Math.round(icon.width * 16 / 22)
-                height: width
-                radius: width / 2
-                color: "transparent"
-                // 1 px more than the grid's: at the same width it looked thinner in the
-                // tray than the media icon
-                border.width: Math.max(1, Math.round(icon.width / 22)) + 1
-                border.color: root.recording ? "#da4453"
-                            : compact.containsMouse ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
-            }
-            Kirigami.Icon {
-                anchors.fill: parent
-                source: Qt.resolvedUrl("../icons/grab-mic.svg")
-                isMask: true
-                color: Kirigami.Theme.textColor
-            }
-        }
     }
 
     fullRepresentation: FullView {

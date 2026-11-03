@@ -27,12 +27,13 @@ package() {
     install -Dm644 grabd.service "$pkgdir/usr/lib/systemd/user/grabd.service"
     install -Dm644 packaging/org.grab.Recorder.service \
         "$pkgdir/usr/share/dbus-1/services/org.grab.Recorder.service"
+    # the tray icon (symbolic, recoloured by the theme like Breeze's)
+    install -Dm644 -t "$pkgdir/usr/share/icons/hicolor/scalable/status" packaging/icons/*.svg
 
     local widget="$pkgdir/usr/share/plasma/plasmoids/org.grab.recorder"
     install -Dm644 plasmoid/metadata.json "$widget/metadata.json"
     install -Dm644 -t "$widget/contents/ui" plasmoid/contents/ui/*.qml
     install -Dm644 -t "$widget/contents/config" plasmoid/contents/config/*.qml
-    install -Dm644 -t "$widget/contents/icons" plasmoid/contents/icons/*.svg
     # the widget reports the package version
     python -c 'import json, sys
 p, v = sys.argv[1], sys.argv[2]
