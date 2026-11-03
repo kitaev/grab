@@ -146,9 +146,10 @@ Item {
             }
             Kirigami.Icon {
                 id: micIcon
-                // transparent margin inside the icon left of the (narrow) mic glyph,
-                // measured for Breeze: ~6 of 16 px
-                readonly property real padding: Math.round(implicitWidth * 0.375)
+                // transparent margin inside the icon left of the mic glyph: ~3 of
+                // 16 px for Breeze, measured on a plasmashell screenshot (offscreen
+                // test renders load icons differently and show ~6)
+                readonly property real padding: Math.round(implicitWidth * 0.1875)
                 visible: row.showInput
                 source: "audio-input-microphone"
                 implicitWidth: Kirigami.Units.iconSizes.small
