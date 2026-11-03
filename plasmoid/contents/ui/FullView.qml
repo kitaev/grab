@@ -1,5 +1,6 @@
-// The popup: live streams first, then finished recordings, and a footer with
-// the recordings folder and Remove All Finished.
+// The popup: a Streams tab (what can be or is being recorded) and a Records
+// tab (finished recordings), and a footer with the recordings folder and,
+// on Records, Remove All Finished.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -15,74 +16,53 @@ ColumnLayout {
     Layout.minimumWidth: Kirigami.Units.gridUnit * 20
     Layout.preferredWidth: Kirigami.Units.gridUnit * 26
     Layout.minimumHeight: Kirigami.Units.gridUnit * 12
+    // sized for the longer list, so switching tabs doesn't resize the popup
     Layout.preferredHeight: Math.min(Kirigami.Units.gridUnit * 34,
                                      Math.max(Kirigami.Units.gridUnit * 12,
-                                              list.contentHeight + footer.implicitHeight
+                                              Math.max(streamList.listHeight, recordList.listHeight)
+                                              + tabs.implicitHeight + footer.implicitHeight
                                               + Kirigami.Units.largeSpacing * 2))
 
-    PlasmaComponents3.ScrollView {
+    readonly property bool onRecords: tabs.currentIndex === 1
+
+    PlasmaComponents3.TabBar {
+        id: tabs
+        objectName: "tabs"
+        Layout.fillWidth: true
+
+        PlasmaComponents3.TabButton {
+            text: "Streams"
+        }
+        PlasmaComponents3.TabButton {
+            text: "Records"
+        }
+    }
+
+    StackLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
+        currentIndex: tabs.currentIndex
 
-        ListView {
-            id: list
-            objectName: "itemList"
-            clip: true
-            model: view.recorder.items
-            reuseItems: false
-            boundsBehavior: Flickable.StopAtBounds
+        ItemList {
+            id: streamList
+            recorder: view.recorder
+            model: view.recorder.streams
+            placeholderIcon: view.recorder.available ? "media-record" : "dialog-warning"
+            placeholderText: view.recorder.available ? "No recordable streams" : "Recorder service not running"
+            placeholderExplanation: view.recorder.available
+                ? "Start playing audio in an application to record it."
+                : "Start it with: systemctl --user start grabd"
+        }
 
-            section.property: "group"
-            section.criteria: ViewSection.FullString
-            section.delegate: PlasmaExtras.ListSectionHeader {
-                required property string section
-                width: ListView.view.width
-                text: section === "finished" ? "Finished" : "Streams"
-            }
-
-            delegate: ColumnLayout {
-                id: entry
-                required property int index
-                required property var model
-                width: ListView.view.width
-                spacing: 0
-
-                ItemRow {
-                    Layout.fillWidth: true
-                    Layout.leftMargin: Kirigami.Units.smallSpacing
-                    Layout.rightMargin: Kirigami.Units.smallSpacing
-                    recorder: view.recorder
-                    index: entry.index
-                    itemId: entry.model.itemId
-                    title: entry.model.title
-                    app: entry.model.app
-                    itemState: entry.model.itemState
-                    busy: entry.model.busy
-                    pending: entry.model.pending
-                    stream: entry.model.stream
-                    input: entry.model.input
-                    input_description: entry.model.input_description
-                    file: entry.model.file
-                    duration: entry.model.duration
-                    error: entry.model.error
-                }
-                Kirigami.Separator {
-                    Layout.fillWidth: true
-                    visible: !entry.model.lastInGroup
-                    opacity: 0.5
-                }
-            }
-
-            PlasmaExtras.PlaceholderMessage {
-                anchors.centerIn: parent
-                width: parent.width - Kirigami.Units.gridUnit * 2
-                visible: list.count === 0
-                iconName: view.recorder.available ? "media-record" : "dialog-warning"
-                text: view.recorder.available ? "No recordable streams" : "Recorder service not running"
-                explanation: view.recorder.available
-                    ? "Start playing audio in an application to record it."
-                    : "Start it with: systemctl --user start grabd"
-            }
+        ItemList {
+            id: recordList
+            recorder: view.recorder
+            model: view.recorder.records
+            placeholderIcon: view.recorder.available ? "audio-x-generic" : "dialog-warning"
+            placeholderText: view.recorder.available ? "No recordings" : "Recorder service not running"
+            placeholderExplanation: view.recorder.available
+                ? "Finished recordings appear here."
+                : "Start it with: systemctl --user start grabd"
         }
     }
 
@@ -109,6 +89,7 @@ ColumnLayout {
             objectName: "removeAllButton"
             icon.name: "edit-clear-all"
             text: "Remove All Finished"
+            visible: view.onRecords
             enabled: view.recorder.finishedCount > 0
             checkable: true
             checked: removeAllMenu.visible

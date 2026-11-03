@@ -19,7 +19,7 @@ PlasmoidItem {
     Plasmoid.icon: "media-record"
     // Active (not NeedsAttention) while recording: the tray animates needs-attention
     // icons, and the red dot already says we're recording.
-    Plasmoid.status: !backend.available || recording || backend.items.count > 0
+    Plasmoid.status: !backend.available || recording || backend.count > 0
                    ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
 
     toolTipMainText: "Grab"
@@ -28,10 +28,10 @@ PlasmoidItem {
             return "Recorder service not running";
         if (recording)
             return "Recording:\n" + backend.recordingTitles.join("\n");
-        if (backend.items.count === 0)
+        if (backend.count === 0)
             return "No streams";
         const busy = backend.busyCount;
-        return `${backend.items.count} item(s)` + (busy ? `, ${busy} encoding` : "");
+        return `${backend.count} item(s)` + (busy ? `, ${busy} encoding` : "");
     }
 
     compactRepresentation: MouseArea {

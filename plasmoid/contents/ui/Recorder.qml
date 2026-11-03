@@ -1,6 +1,6 @@
-// Client side of grabd (org.grab.Recorder1): mirrors its state into `items`
-// (a ListModel updated in place, so open popups in delegates survive updates)
-// and `inputs`, and wraps its methods.
+// Client side of grabd (org.grab.Recorder1): mirrors its state into
+// `streams` and `records` (ListModels updated in place, so open popups in
+// delegates survive updates) and `inputs`, and wraps its methods.
 import QtQuick
 import org.kde.plasma.workspace.dbus as DBus
 
@@ -12,7 +12,9 @@ QtObject {
     readonly property string iface: "org.grab.Recorder1"
 
     readonly property bool available: watcher.registered
-    readonly property ListModel items: ListModel {}
+    readonly property ListModel streams: ListModel {}   // available, recording, paused, encoding
+    readonly property ListModel records: ListModel {}   // done, empty, failed
+    readonly property int count: streams.count + records.count
     property var inputs: []                // [{name, description, default}]
     property string folder: ""             // grabd's recordings folder
     property int recordingCount: 0
@@ -68,20 +70,25 @@ QtObject {
     }
 
     function clear() {
-        items.clear();
+        streams.clear();
+        records.clear();
         inputs = [];
         recordingCount = finishedCount = busyCount = 0;
         recordingTitles = [];
     }
 
-    // Live items first, then finished ones, each in grabd's order. Rows are
-    // updated, moved, inserted and removed in place, matched by id.
     function sync(list) {
-        const wanted = list.filter(it => it.group === "live")
-                           .concat(list.filter(it => it.group === "finished"));
-        wanted.forEach((it, k) => {        // no separator after the last row of a section
-            it.lastInGroup = k === wanted.length - 1 || wanted[k + 1].group !== it.group;
-        });
+        syncModel(streams, list.filter(it => it.group === "live"));
+        syncModel(records, list.filter(it => it.group === "finished"));
+        recordingCount = list.filter(it => it.itemState === "recording").length;
+        finishedCount = records.count;
+        busyCount = list.filter(it => it.itemState === "encoding" || it.busy).length;
+        recordingTitles = list.filter(it => it.itemState === "recording").map(it => it.title);
+    }
+
+    // Make `items` match `wanted` (in grabd's order): rows are updated, moved,
+    // inserted and removed in place, matched by id.
+    function syncModel(items, wanted) {
         const ids = new Set(wanted.map(it => it.itemId));
         for (let i = items.count - 1; i >= 0; i--) {
             if (!ids.has(items.get(i).itemId))
@@ -105,10 +112,6 @@ QtObject {
                     items.setProperty(k, key, it[key]);
             }
         }
-        recordingCount = wanted.filter(it => it.itemState === "recording").length;
-        finishedCount = wanted.filter(it => it.group === "finished").length;
-        busyCount = wanted.filter(it => it.itemState === "encoding" || it.busy).length;
-        recordingTitles = wanted.filter(it => it.itemState === "recording").map(it => it.title);
     }
 
     readonly property var watcher: DBus.DBusServiceWatcher {
