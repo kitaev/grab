@@ -12,7 +12,10 @@ import org.kde.plasma.plasmoid
 PlasmoidItem {
     id: root
 
-    Recorder { id: backend }
+    Recorder {
+        id: backend
+        monitoring: root.expanded          // level meters only while the popup is open
+    }
 
     readonly property bool recording: backend.recordingCount > 0
 

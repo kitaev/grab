@@ -2,6 +2,7 @@
 // `streams` and `records` (ListModels updated in place, so open popups in
 // delegates survive updates) and `inputs`, and wraps its methods.
 import QtQuick
+import org.kde.plasma.private.volume as PA
 import org.kde.plasma.workspace.dbus as DBus
 
 QtObject {
@@ -17,6 +18,30 @@ QtObject {
     readonly property int count: streams.count + records.count
     property var inputs: []                // [{name, description, default}]
     property string folder: ""             // grabd's recordings folder
+
+    // Level meters (see ItemRow): Plasma's own stream objects by sink-input
+    // index, from the volume applet's (private) module. Only while `monitoring`.
+    property bool monitoring: false
+    property var sinkInputs: ({})          // index -> PulseObject
+    readonly property var sinkInputModel: PA.SinkInputModel {}
+    readonly property var sinkInputWatch: Instantiator {
+        model: rec.sinkInputModel
+        delegate: QtObject {
+            required property var model    // roles Index, PulseObject
+            readonly property int index_: model.Index
+            readonly property var object_: model.PulseObject
+        }
+        onObjectAdded: (i, o) => {
+            const m = Object.assign({}, rec.sinkInputs);
+            m[o.index_] = o.object_;
+            rec.sinkInputs = m;
+        }
+        onObjectRemoved: (i, o) => {
+            const m = Object.assign({}, rec.sinkInputs);
+            delete m[o.index_];
+            rec.sinkInputs = m;
+        }
+    }
     property int recordingCount: 0
     property int finishedCount: 0
     property int busyCount: 0

@@ -44,6 +44,7 @@ PlasmaComponents3.ScrollView {
                 busy: entry.model.busy
                 pending: entry.model.pending
                 muted: entry.model.muted
+                stream_index: entry.model.stream_index
                 stream: entry.model.stream
                 input: entry.model.input
                 input_description: entry.model.input_description

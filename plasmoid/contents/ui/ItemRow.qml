@@ -7,6 +7,7 @@ import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents3
+import org.kde.plasma.private.volume as PA
 import org.kde.plasma.workspace.dbus as DBus
 
 Item {
@@ -21,6 +22,7 @@ Item {
     required property bool busy
     required property bool pending
     required property bool muted
+    required property int stream_index
     required property bool stream
     required property string input
     required property string input_description
@@ -267,6 +269,26 @@ Item {
                     maximumLineCount: 4
                     elide: Text.ElideRight
                     font.weight: row.itemState === "recording" ? Font.DemiBold : Font.Normal
+                }
+
+                PlasmaComponents3.ProgressBar {    // the stream's level, like the volume applet's
+                    id: levelBar
+                    objectName: "levelBar"
+                    Layout.fillWidth: true
+                    Layout.topMargin: Kirigami.Units.smallSpacing
+                    visible: !row.finished && row.stream
+                    from: 0
+                    to: 1
+                    value: meter.volume
+                    Behavior on value {
+                        NumberAnimation { duration: Kirigami.Units.shortDuration; easing.type: Easing.OutQuad }
+                    }
+
+                    PA.VolumeMonitor {
+                        id: meter
+                        target: row.recorder.monitoring && levelBar.visible
+                                ? (row.recorder.sinkInputs[row.stream_index] ?? null) : null
+                    }
                 }
             }
 

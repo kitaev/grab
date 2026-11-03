@@ -23,13 +23,15 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   signal StateChanged(s)                GetState() after any change (for clients
                                         that handle JSON more easily than variants)
 
-Item properties: id, title, app, state, busy, pending, muted, stream, input,
+Item properties: id, title, app, state, busy, pending, muted, stream, stream_index, input,
 input_description, file, duration, error.
   state:   available | recording | paused | encoding | done | empty | failed
   busy:    an MP3 snapshot/final encode is queued or running for this item
   pending: a Toggle is in progress (starting, pausing or resuming); further
            Toggles are ignored until it is done
   muted:   the stream's playback is muted (SetPlaybackMuted)
+  stream_index: the stream's PulseAudio sink-input index (-1 without a stream),
+           e.g. for a client to show its level
   error:   why the last start failed (state stays available), or for
            finished items what went wrong
 
@@ -441,6 +443,7 @@ class Item:
             "pending": Variant("b", self.pending),
             "muted": Variant("b", self.muted),
             "stream": Variant("b", self.stream is not None),
+            "stream_index": Variant("i", self.stream.idx if self.stream else -1),
             "input": Variant("s", self.input),
             "input_description": Variant("s", input_desc),
             "file": Variant("s", self.file),
