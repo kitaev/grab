@@ -5,7 +5,8 @@ Shows grabd's items (recordable streams, recordings, finished files) in a
 tray menu that opens on left and right click (StatusNotifierItem with
 ItemIsMenu, works on Wayland). Per item: Record / Pause / Resume, the
 microphone input mixed into the recording, and for finished items (including
-MP3s grabd found in the recordings folder) Open, Show in folder, Dismiss.
+MP3s grabd found in the recordings folder) Open, Show in folder, Remove Entry,
+Remove Entry and Data (files go to the Trash).
 Reports Status for KDE's "Shown when relevant".
 
 Requires: python-dbus-next; the grabd service.
@@ -464,6 +465,8 @@ class Tray:
             "empty": "Nothing recorded",
             "failed": f"Failed: {it.get('error') or 'unknown error'}",
         }.get(st, st)
+        if st in ("done", "empty") and it.get("error"):
+            text += f" · {it['error']}"
         return text + (saving if st in ("recording", "paused") else "")
 
     def input_menu(self, it):
@@ -509,8 +512,11 @@ class Tray:
                              "action": (lambda p=it["file"]: self.show_in_folder(p))})
 
         if st in ("done", "empty", "failed"):
-            children.append({"label": "Dismiss", "icon": "edit-clear",
-                             "action": self.call(self.svc.call_dismiss, it["id"])})
+            children.append({"separator": True})
+            children.append({"label": "Remove Entry", "icon": "edit-clear",
+                             "action": self.call(self.svc.call_remove, it["id"], False)})
+            children.append({"label": "Remove Entry and Data", "icon": "user-trash",
+                             "action": self.call(self.svc.call_remove, it["id"], True)})
 
         prefix = {"recording": "● ", "paused": "❚❚ ", "encoding": "… "}.get(st, "")
         return {"label": wrap2(prefix + it["title"]), "icon": STATE_ICON.get(st, ""),
@@ -530,8 +536,13 @@ class Tray:
                 if live:
                     entries.append({"separator": True})
                 entries += [self.item_entry(i) for i in finished]
-                entries.append({"label": "Dismiss all finished", "icon": "edit-clear-all",
-                                "action": self.call(self.svc.call_dismiss_finished)})
+                entries.append({"label": "Remove All Finished", "icon": "edit-clear-all",
+                                "children": [
+                                    {"label": "Remove All Entries", "icon": "edit-clear-all",
+                                     "action": self.call(self.svc.call_remove_finished, False)},
+                                    {"label": "Remove All Entries and Data", "icon": "user-trash",
+                                     "action": self.call(self.svc.call_remove_finished, True)},
+                                ]})
         entries.append({"separator": True})
         entries.append({"label": "Open recordings folder", "icon": "folder-music",
                         "action": (lambda: self.open_path(OUTDIR))})

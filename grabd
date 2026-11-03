@@ -7,8 +7,9 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   ListInputs()           -> a(ssb)     microphones: (name, description, is_default)
   Toggle(s id)                          available -> recording -> paused -> recording ...
   SetInput(s id, s input)               "" none, "default" follow default mic, or source name
-  Dismiss(s id)                         remove a finished item (done / empty / failed)
-  DismissFinished()                     remove all finished items
+  Remove(s id, b with_data)             remove a finished item (done / empty / failed);
+                                        with_data also moves its files to the Trash
+  RemoveFinished(b with_data)           Remove() every finished item
   signal ItemsChanged(a(sa{sv}))        full item list after any change
   signal InputsChanged(a(ssb))          full input list after any change
 
@@ -21,15 +22,17 @@ Recording: a hidden virtual null sink per recording; the app stream (and the
 chosen input) are linked into it alongside their normal routing; one ffmpeg
 writes a lossless FLAC with silence removed. Pause unlinks and saves an MP3
 snapshot; resume relinks and appends. When the stream disappears the item is
-finalized (state encoding -> done/empty/failed) and stays until dismissed.
+finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
 
 Each saved MP3 gets a metadata file next to it (same name, .json: title, app,
 start time, duration, input). MP3s in the recordings folder that have one and
 belong to no item (earlier sessions) are listed as done items; MP3s without
-one are not listed. Dismissing a finished item deletes its metadata file (the
-MP3 stays). Items disappear when their MP3 or metadata file is deleted, and
-metadata files whose MP3 is gone are removed.
+one are not listed. Removing a finished item deletes its metadata file and
+keeps the MP3; removing it with data moves the MP3, metadata and any leftover
+FLAC to the Trash (restoring them brings the item back). Items disappear when
+their MP3 or metadata file is deleted, and metadata files whose MP3 is gone
+are removed.
 
 Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
 """
@@ -644,12 +647,28 @@ class Recorder:
             self.queue.request(item, final=True)
             self.changed()
 
-    def dismiss(self, item):
-        if item.state in FINISHED:
+    async def remove(self, item, with_data=False):
+        async with item.op:
+            if item.state not in FINISHED or self.items.get(item.id) is not item:
+                return
+            mp3 = item.file or item.mp3
+            if with_data:
+                paths = list(dict.fromkeys(
+                    p for p in (mp3, mp3 and meta_path(mp3), item.flac) if p and os.path.exists(p)))
+                if paths:
+                    rc, _ = await run("gio", "trash", "--", *paths)
+                    if rc != 0:
+                        item.error = "could not move the files to the Trash"
+                        self.changed()
+                        return
+            elif mp3:
+                remove_meta(mp3)
             self.items.pop(item.id, None)
-            if item.file:
-                remove_meta(item.file)
             self.changed()
+
+    async def remove_finished(self, with_data=False):
+        for item in list(self.items.values()):
+            await self.remove(item, with_data)
 
     # ---- files in the recordings folder
 
@@ -777,15 +796,14 @@ class RecorderInterface(ServiceInterface):
             self._spawn(self.rec.set_input(item, input_name))
 
     @method()
-    def Dismiss(self, item_id: "s"):
+    def Remove(self, item_id: "s", with_data: "b"):
         item = self._item(item_id)
         if item:
-            self.rec.dismiss(item)
+            self._spawn(self.rec.remove(item, with_data))
 
     @method()
-    def DismissFinished(self):
-        for item in list(self.rec.items.values()):
-            self.rec.dismiss(item)
+    def RemoveFinished(self, with_data: "b"):
+        self._spawn(self.rec.remove_finished(with_data))
 
     @dbus_signal()
     def ItemsChanged(self) -> "a(sa{sv})":
