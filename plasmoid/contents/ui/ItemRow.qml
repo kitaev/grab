@@ -238,13 +238,28 @@ Item {
                     visible: row.itemState === "recording" && !row.toggling
                     opacity: toggleButton.opacity
 
-                    Rectangle {            // ring
+                    Rectangle {            // ring, pulsing while the popup is open
+                        id: ring
                         anchors.fill: parent
                         anchors.margins: Math.round(parent.width * 0.08)
                         radius: width / 2
                         color: "transparent"
                         border.width: Math.max(1.5, parent.width * 0.09)
                         border.color: "#da4453"    // Breeze's media-record red
+
+                        SequentialAnimation {
+                            running: ring.parent.visible && row.recorder.monitoring
+                            loops: Animation.Infinite
+                            onRunningChanged: if (!running) { ring.opacity = 1; ring.scale = 1; }
+                            ParallelAnimation {
+                                NumberAnimation { target: ring; property: "opacity"; to: 0.25; duration: 800; easing.type: Easing.InOutSine }
+                                NumberAnimation { target: ring; property: "scale"; to: 1.12; duration: 800; easing.type: Easing.InOutSine }
+                            }
+                            ParallelAnimation {
+                                NumberAnimation { target: ring; property: "opacity"; to: 1; duration: 800; easing.type: Easing.InOutSine }
+                                NumberAnimation { target: ring; property: "scale"; to: 1; duration: 800; easing.type: Easing.InOutSine }
+                            }
+                        }
                     }
                     Rectangle {            // dot
                         anchors.centerIn: parent
