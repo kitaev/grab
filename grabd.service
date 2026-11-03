@@ -1,0 +1,16 @@
+[Unit]
+Description=Grab recording service
+After=pipewire-pulse.service
+Wants=pipewire-pulse.service
+
+[Service]
+ExecStart=%h/.local/bin/grabd
+TimeoutStopSec=600
+# Stop signals grabd only; it stops its ffmpeg children itself (SIGINT, so they
+# finish their FLAC). With the default, ffmpeg got systemd's SIGTERM too and the
+# second signal made it exit without writing the trailer.
+KillMode=mixed
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
