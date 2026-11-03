@@ -34,7 +34,7 @@ Item {
     onItemStateChanged: clicked = false
     readonly property bool controllable: ["available", "recording", "paused"].indexOf(itemState) >= 0
 
-    implicitHeight: column.implicitHeight + Kirigami.Units.smallSpacing * 2
+    implicitHeight: column.implicitHeight + column.anchors.topMargin + column.anchors.bottomMargin
     implicitWidth: column.implicitWidth
 
     function mmss(sec) {
@@ -92,7 +92,7 @@ Item {
         id: column
         anchors.fill: parent
         anchors.topMargin: Kirigami.Units.smallSpacing
-        anchors.bottomMargin: Kirigami.Units.smallSpacing
+        anchors.bottomMargin: Kirigami.Units.smallSpacing * 2
         spacing: Kirigami.Units.smallSpacing
 
         PlasmaComponents3.Label {          // status, above the title and starting where it starts
