@@ -45,8 +45,9 @@ Item {
 
     // Buttons have padding around their icons: shift them up by it, so the icons'
     // tops line up with the top of the title.
-    readonly property real buttonShift: -Math.max(0, (toggleButton.implicitHeight
-                                                      - Kirigami.Units.iconSizes.smallMedium) / 2)
+    // (Not from the button's implicit height: it has no icon while recording.)
+    readonly property real buttonShift: -Math.max(0, (toggleButton.topPadding
+                                                      + toggleButton.bottomPadding) / 2)
     implicitWidth: column.implicitWidth
 
     function mmss(sec) {
@@ -210,8 +211,12 @@ Item {
                 id: lead
                 Layout.alignment: Qt.AlignTop
                 Layout.topMargin: row.buttonShift
-                implicitWidth: toggleButton.implicitWidth
-                implicitHeight: toggleButton.implicitHeight
+                // from the icon size, not the button's implicit size: that shrinks when
+                // the button has no icon (recording: the ring is drawn; toggling: spinner)
+                implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                    + toggleButton.leftPadding + toggleButton.rightPadding
+                implicitHeight: Kirigami.Units.iconSizes.smallMedium
+                    + toggleButton.topPadding + toggleButton.bottomPadding
 
                 PlasmaComponents3.ToolButton {
                     id: toggleButton
