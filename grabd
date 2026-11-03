@@ -1204,6 +1204,30 @@ class Recorder:
         if orig is None:
             await run("pw-metadata", "-n", "default", "-d", stream_node, "target.object")
 
+        # Make sure it plays again before grab_silent can go: a stream left without
+        # links is never run, and can stall its app's other streams (seen with a
+        # paused Firefox stream, where WirePlumber didn't move it back).
+        for _ in range(30):
+            if await self._playback_device(stream_node):
+                return
+            await asyncio.sleep(0.1)
+        nodes, _links = await pw_graph()
+        target = next((i for i, p in nodes.items() if str(p.get("object.serial")) == str(back)), device)
+        if target:
+            print(f"grabd: stream {stream_node} not relinked by WirePlumber; linking it to "
+                  f"{nodes.get(target, {}).get('node.name')}", flush=True)
+            await self._link(stream_node, target, ("FL", "FR"))
+
+    async def _playback_device(self, stream_node):
+        """The playback device a stream is linked to (not grab's own sinks), or None."""
+        nodes, links = await pw_graph()
+        for onode, _oport, inode, _iport in links:
+            p = nodes.get(inode, {})
+            if (onode == str(stream_node) and p.get("media.class", "").startswith("Audio/Sink")
+                    and not p.get("node.name", "").startswith("grab_")):
+                return inode
+        return None
+
     def save_now(self, item):
         if item.state in ACTIVE and item.flac:
             self.queue.request(item)
