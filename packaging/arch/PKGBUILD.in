@@ -30,6 +30,7 @@ package() {
     local widget="$pkgdir/usr/share/plasma/plasmoids/org.grab.recorder"
     install -Dm644 plasmoid/metadata.json "$widget/metadata.json"
     install -Dm644 -t "$widget/contents/ui" plasmoid/contents/ui/*.qml
+    install -Dm644 -t "$widget/contents/config" plasmoid/contents/config/*.qml
     # the widget reports the package version
     python -c 'import json, sys
 p, v = sys.argv[1], sys.argv[2]

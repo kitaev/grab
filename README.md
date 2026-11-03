@@ -98,17 +98,22 @@ grabd runs as a systemd *user* service, not a system one, because it needs
 things that only exist in your login session: your PipeWire graph, the session
 D-Bus, your Music folder and your Trash.
 
-## Where recordings go
+## Settings
 
-Recordings are saved as `grab/` inside your XDG music folder (`XDG_MUSIC_DIR`
-in `~/.config/user-dirs.dirs`), usually `~/Music/grab`. To use a different
-folder, set `GRAB_OUTDIR` for the unit:
+Right-click the tray icon and choose **Configure Record What's Playing…**.
+There are two settings:
 
-```sh
-systemctl --user edit grabd
-# [Service]
-# Environment=GRAB_OUTDIR=%h/Recordings
-```
+- **Save recordings in:** the folder for new recordings. By default this is
+  `grab/` inside your XDG music folder (`XDG_MUSIC_DIR` in
+  `~/.config/user-dirs.dirs`), usually `~/Music/grab`. Recordings already made
+  stay where they are, and the list shows the recordings in the chosen folder.
+- **Removed recordings:** move them to the Trash (the default) or delete them
+  permanently. This applies to *Remove Recording* and *Remove Entry and
+  Data*.
+
+grabd keeps these settings itself, in `~/.config/grabd/settings.json`, so they
+are the same for every copy of the widget. Setting `GRAB_OUTDIR` in the unit's
+environment (`systemctl --user edit grabd`) changes the default folder.
 
 While a stream is recording, grabd writes a hidden `.<name>.flac` file. The
 MP3 is encoded from it when the recording is stopped or saved. The title,

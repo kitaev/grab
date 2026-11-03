@@ -8,7 +8,7 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   Toggle(s id)                          available -> recording -> paused -> recording ...
   SetInput(s id, s input)               "" none, "default" follow default mic, or source name
   Remove(s id, b with_data)             remove a finished item (done / empty / failed);
-                                        with_data also moves its files to the Trash
+                                        with_data also removes its files (Trash or delete)
   RemoveFinished(b with_data)           Remove() every finished item
   SaveNow(s id)                         save an MP3 snapshot of a recording/paused item now
   SetPlaybackMuted(s id, b muted)       stop/resume playing a stream on its device; it is
@@ -20,8 +20,16 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   signal Levels(s)                      while meters are on, ~15 times a second: JSON
                                         {item id: level 0..1 (RMS)} for items with a stream
   RemoveRecord(s id)                    discard a recording/paused item's recording: stop it,
-                                        move its MP3 and FLAC to the Trash; the stream is
-                                        offered again
+                                        remove its MP3 and FLAC (Trash or delete, see
+                                        settings); the stream is offered again
+  GetSettings()          -> s          JSON {"folder": recordings folder ("" = default),
+                                        "default_folder", "trash": removed files go to the
+                                        Trash (true) or are deleted (false)}
+  SetSettings(s json)                   change some settings (same keys; "folder": "" for
+                                        the default); fails with a message if the folder
+                                        can't be created or written. Saved in
+                                        ~/.config/grabd/settings.json
+  signal SettingsChanged(s)             GetSettings() after a change
   signal ItemsChanged(a(sa{sv}))        full item list after any change
   signal InputsChanged(a(ssb))          full input list after any change
   GetState()             -> s          JSON {"items": [{properties}], "inputs":
@@ -76,7 +84,8 @@ grab_input. MP3s in the recordings folder that carry the marker and belong to
 no item (earlier sessions) are listed as done items; others are not listed.
 Removing a finished item strips the marker (a lossless copy of the MP3) and
 keeps the MP3; removing it with data moves the MP3 and any leftover FLAC to
-the Trash (restoring them brings the item back). Items disappear when their
+the Trash (restoring them brings the item back), or deletes them if the
+"trash" setting is off. Items disappear when their
 MP3 is deleted or loses the marker.
 
 Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
@@ -103,6 +112,7 @@ except ImportError:                        # optional; ffprobe/ffmpeg are the fa
     mutagen = None
 
 from dbus_next import BusType, Message, MessageType, Variant
+from dbus_next.errors import DBusError
 from dbus_next.aio import MessageBus
 from dbus_next.service import ServiceInterface, method
 from dbus_next.service import signal as dbus_signal
@@ -125,7 +135,75 @@ def music_dir():
     return os.path.expanduser("~/Music")
 
 
-OUTDIR = os.environ.get("GRAB_OUTDIR") or os.path.join(music_dir(), "grab")
+DEFAULT_OUTDIR = os.environ.get("GRAB_OUTDIR") or os.path.join(music_dir(), "grab")
+SETTINGS_FILE = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                             "grabd", "settings.json")
+SETTINGS_DEFAULTS = {"folder": "", "trash": True}
+
+
+class SettingsError(Exception):
+    pass
+
+
+class Settings:
+    """User settings, kept in SETTINGS_FILE: the recordings folder ("" for
+    DEFAULT_OUTDIR) and whether removed files go to the Trash."""
+
+    def __init__(self):
+        self.values = dict(SETTINGS_DEFAULTS)
+        try:
+            with open(SETTINGS_FILE) as f:
+                saved = json.load(f)
+            for key, default in SETTINGS_DEFAULTS.items():
+                if isinstance(saved.get(key), type(default)):
+                    self.values[key] = saved[key]
+        except (OSError, ValueError, AttributeError):
+            pass
+
+    @property
+    def outdir(self):
+        return self.values["folder"] or DEFAULT_OUTDIR
+
+    @property
+    def trash(self):
+        return self.values["trash"]
+
+    def as_dict(self):
+        return {**self.values, "default_folder": DEFAULT_OUTDIR}
+
+    def update(self, changes):
+        new = dict(self.values)
+        for key, value in changes.items():
+            if key not in SETTINGS_DEFAULTS:
+                raise SettingsError(f"unknown setting: {key}")
+            if not isinstance(value, type(SETTINGS_DEFAULTS[key])):
+                raise SettingsError(f"wrong type for {key}")
+            new[key] = value
+        folder = os.path.expanduser(new["folder"].strip())
+        if folder:
+            if not os.path.isabs(folder):
+                raise SettingsError("the folder must be an absolute path")
+            folder = os.path.normpath(folder)
+            if folder == DEFAULT_OUTDIR:
+                folder = ""
+        new["folder"] = folder
+        outdir = folder or DEFAULT_OUTDIR
+        try:
+            os.makedirs(outdir, exist_ok=True)
+        except OSError as e:
+            raise SettingsError(f"can't create {outdir}: {e.strerror}")
+        if not os.access(outdir, os.W_OK | os.X_OK):
+            raise SettingsError(f"can't write to {outdir}")
+        os.makedirs(os.path.dirname(SETTINGS_FILE), exist_ok=True)
+        tmp = SETTINGS_FILE + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(new, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        os.replace(tmp, SETTINGS_FILE)
+        self.values = new
+
+
+SETTINGS = Settings()
 AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
       "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
 MIC_GATE_DB = -45          # input quieter than this is muted, so its noise isn't "sound"
@@ -256,6 +334,22 @@ def tag_args(meta):
     tags = {"title": meta.get("title"), "date": meta.get("started"), "grab": "1",
             "grab_app": meta.get("app"), "grab_input": meta.get("input")}
     return [a for k, v in tags.items() if v for a in ("-metadata", f"{k}={v}")]
+
+
+async def discard(paths):
+    """Move files to the Trash or delete them (the "trash" setting); returns
+    an error message or ""."""
+    if not paths:
+        return ""
+    if SETTINGS.trash:
+        rc, _ = await run("gio", "trash", "--", *paths)
+        return "" if rc == 0 else "could not move the files to the Trash"
+    try:
+        for path in paths:
+            os.remove(path)
+    except OSError as e:
+        return f"could not delete the files: {e.strerror}"
+    return ""
 
 
 _tag_cache = {}                            # path -> ((mtime_ns, size), meta or None)
@@ -479,6 +573,7 @@ class Item:
         self.duration = 0.0
         self.error = ""
         self.started = ""                  # ISO time the recording started
+        self.recorded = False              # recorded by this grabd (not found by a scan)
         self.input_desc = ""               # input as recorded, if no longer known (recovered)
         # recording internals
         self.sink = ""
@@ -813,7 +908,7 @@ class Recorder:
                  for i in self.items.values()]
         inputs = [{"name": n, "description": d, "default": is_def}
                   for n, d, is_def in self.input_list()]
-        return json.dumps({"items": items, "inputs": inputs, "folder": OUTDIR}, ensure_ascii=False)
+        return json.dumps({"items": items, "inputs": inputs, "folder": SETTINGS.outdir}, ensure_ascii=False)
 
     def item_list(self):
         return [[i.id, i.props(self.input_description(i.input))] for i in self.items.values()]
@@ -1040,8 +1135,9 @@ class Recorder:
         now = time.localtime()
         item.started = time.strftime("%Y-%m-%dT%H:%M:%S", now)
         base = f"{time.strftime('%Y-%m-%d_%H-%M-%S', now)}_{fname(item.title)}"
-        item.flac = os.path.join(OUTDIR, f".{base}.flac")
-        item.mp3 = os.path.join(OUTDIR, f"{base}.mp3")
+        item.recorded = True
+        item.flac = os.path.join(SETTINGS.outdir, f".{base}.flac")
+        item.mp3 = os.path.join(SETTINGS.outdir, f"{base}.mp3")
         item.module = await self._load_sink(item.sink, "Grab")
         if not item.module:
             item.error = "could not create sink"
@@ -1106,12 +1202,11 @@ class Recorder:
             mp3 = item.file or item.mp3
             if with_data:
                 paths = list(dict.fromkeys(p for p in (mp3, item.flac) if p and os.path.exists(p)))
-                if paths:
-                    rc, _ = await run("gio", "trash", "--", *paths)
-                    if rc != 0:
-                        item.error = "could not move the files to the Trash"
-                        self.changed()
-                        return
+                error = await discard(paths)
+                if error:
+                    item.error = error
+                    self.changed()
+                    return
             elif mp3 and os.path.exists(mp3) and not await unmark(mp3):
                 item.error = "could not update the MP3's tags"
                 self.changed()
@@ -1261,17 +1356,14 @@ class Recorder:
             try:
                 await self._teardown(item)
                 # let a snapshot of this item finish (or drop a queued one), so no
-                # encode writes the MP3 again after it went to the Trash
+                # encode writes the MP3 again after it was removed
                 self.queue.pending.pop(item, None)
                 while self.queue.current is item:
                     await asyncio.sleep(0.1)
                 item.busy = False
                 mp3 = item.mp3
                 paths = [p for p in (mp3, item.flac) if p and os.path.exists(p)]
-                if paths:
-                    rc, _ = await run("gio", "trash", "--", *paths)
-                    if rc != 0:
-                        item.error = "could not move the recording to the Trash"
+                item.error = await discard(paths)
                 item.flac = item.mp3 = item.file = item.started = ""
                 item.duration = 0.0
                 item.sink, item.sink_node, item.proc = "", None, None
@@ -1287,28 +1379,36 @@ class Recorder:
 
     async def scan_files(self):
         """List MP3s that carry our marker and belong to no item as done items;
-        drop done items whose MP3 is gone or lost the marker."""
+        drop done items whose MP3 is gone or lost the marker. After the folder
+        setting changed, items found in the old folder go; recordings made by
+        this grabd stay while their MP3 is there."""
         if self.stopping:
             return
+        outdir = SETTINGS.outdir
         try:
-            names = os.listdir(OUTDIR)
+            names = os.listdir(outdir)
         except OSError:
             return                         # don't take an unreadable folder for an empty one
-        present = sorted(os.path.join(OUTDIR, n) for n in names
+        present = sorted(os.path.join(outdir, n) for n in names
                          if n.endswith(".mp3") and not n.startswith("."))
         metas = {}
         for path in present:               # ffprobe only for new or changed files
             meta = await read_tags(path)
             if meta is not None:
                 metas[path] = meta
-        for path in [p for p in _tag_cache if p not in present]:
+        kept = set(present) | {i.file for i in self.items.values() if i.recorded}
+        for path in [p for p in _tag_cache if p not in kept]:
             del _tag_cache[path]
         changed = False
 
         for item in list(self.items.values()):
-            if item.state == "done" and item.file not in metas:
-                self.items.pop(item.id, None)
-                changed = True
+            if item.state != "done" or item.file in metas:
+                continue
+            if item.recorded and os.path.dirname(item.file) != outdir \
+                    and await read_tags(item.file) is not None:
+                continue                   # recorded here into an earlier folder
+            self.items.pop(item.id, None)
+            changed = True
 
         owned = {p for i in self.items.values() for p in (i.mp3, i.file) if p}
         for path, meta in metas.items():
@@ -1355,9 +1455,9 @@ class Recorder:
                 await run("pactl", "unload-module", line.split()[0])
 
     async def recover_orphans(self):
-        for flac in sorted(glob.glob(os.path.join(OUTDIR, ".*.flac"))):
+        for flac in sorted(glob.glob(os.path.join(SETTINGS.outdir, ".*.flac"))):
             base = os.path.basename(flac)[1:-5]
-            mp3 = os.path.join(OUTDIR, base + ".mp3")
+            mp3 = os.path.join(SETTINGS.outdir, base + ".mp3")
             # tagged when recording started; older ones: from a pause snapshot
             meta = await read_tags(flac) or await read_tags(mp3) or {}
             title = base.split("_", 2)[2] if base.count("_") >= 2 else base
@@ -1366,6 +1466,7 @@ class Recorder:
             item.started = meta.get("started") or (f"{m[1]}T{m[2]}:{m[3]}:{m[4]}" if m else "")
             item.input_desc = meta.get("input", "")
             item.flac, item.mp3 = flac, mp3
+            item.recorded = True
             item.state = "encoding"
             self.items[item.id] = item
             self.queue.request(item, final=True)
@@ -1403,6 +1504,32 @@ class RecorderInterface(ServiceInterface):
 
     def _spawn(self, coro):
         asyncio.get_running_loop().create_task(coro)
+
+    @method()
+    def GetSettings(self) -> "s":
+        return json.dumps(SETTINGS.as_dict(), ensure_ascii=False)
+
+    @method()
+    def SetSettings(self, changes: "s"):
+        try:
+            values = json.loads(changes)
+            if not isinstance(values, dict):
+                raise SettingsError("expected a JSON object")
+            SETTINGS.update(values)
+        except ValueError:
+            raise DBusError("org.grab.Recorder1.Error.InvalidSettings", "settings: invalid JSON")
+        except SettingsError as e:
+            raise DBusError("org.grab.Recorder1.Error.InvalidSettings", str(e))
+        except OSError as e:
+            raise DBusError("org.grab.Recorder1.Error.Failed", f"can't save settings: {e}")
+        print(f"grabd: settings: {SETTINGS.values}", flush=True)
+        self.SettingsChanged()
+        self.rec.changed()
+        self._spawn(self.rec.scan_files())
+
+    @dbus_signal()
+    def SettingsChanged(self) -> "s":
+        return json.dumps(SETTINGS.as_dict(), ensure_ascii=False)
 
     @method()
     def ListItems(self) -> "a(sa{sv})":
@@ -1540,7 +1667,10 @@ async def update_loop(rec, restart):
 
 
 async def main():
-    os.makedirs(OUTDIR, exist_ok=True)
+    try:
+        os.makedirs(SETTINGS.outdir, exist_ok=True)
+    except OSError as e:
+        print(f"grabd: can't create {SETTINGS.outdir}: {e}", flush=True)
     rec = Recorder()
     loop = asyncio.get_running_loop()
     worker = loop.create_task(rec.queue.worker())
