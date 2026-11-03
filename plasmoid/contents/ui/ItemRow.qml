@@ -117,6 +117,8 @@ Item {
             id: statusLine
             objectName: "statusLine"
             Layout.fillWidth: true
+            // as tall as with the mic icon, so selecting an input doesn't shift the layout
+            Layout.minimumHeight: Kirigami.Units.iconSizes.small
             Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing
             Layout.bottomMargin: -Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing / 2
