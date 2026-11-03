@@ -24,9 +24,12 @@ snapshot; resume relinks and appends. When the stream disappears the item is
 finalized (state encoding -> done/empty/failed) and stays until dismissed.
 Encodes are serialized in one background queue and coalesced per item.
 
-Other MP3s in the recordings folder (earlier sessions, copied in) are listed
-as done items too. Dismissing a finished item remembers its file so it is not
-listed again; items whose file is deleted disappear.
+Each saved MP3 gets a metadata file next to it (same name, .json: title, app,
+start time, duration, input). MP3s in the recordings folder that have one and
+belong to no item (earlier sessions) are listed as done items; MP3s without
+one are not listed. Dismissing a finished item deletes its metadata file (the
+MP3 stays). Items disappear when their MP3 or metadata file is deleted, and
+metadata files whose MP3 is gone are removed.
 
 Requires: python-dbus-next, ffmpeg, pipewire-pulse (pactl), pipewire (pw-link, pw-dump).
 """
@@ -53,9 +56,6 @@ AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
-STATE_DIR = os.path.join(os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"),
-                         "grab")
-DISMISSED_FILE = os.path.join(STATE_DIR, "dismissed.json")
 
 EXCLUDE_APP_RE = ""        # apps never offered (regex on application.name)
 EXCLUDE_ROLE_RE = r"^(event|notification)$"
@@ -110,23 +110,38 @@ def unwrap(d):
     return {k: (v.value if isinstance(v, Variant) else v) for k, v in d.items()}
 
 
-def load_dismissed():
+def meta_path(mp3):
+    return os.path.splitext(mp3)[0] + ".json"
+
+
+def read_meta(mp3):
+    """The recording's metadata, or None if it has no (valid) metadata file."""
     try:
-        with open(DISMISSED_FILE) as f:
-            return set(json.load(f))
+        with open(meta_path(mp3)) as f:
+            meta = json.load(f)
     except (OSError, ValueError):
-        return set()
+        return None
+    return meta if isinstance(meta, dict) and meta.get("grab") == 1 else None
 
 
-def save_dismissed(paths):
+def write_meta(mp3, meta):
+    path = meta_path(mp3)
+    tmp = os.path.join(os.path.dirname(path), "." + os.path.basename(path) + ".tmp")
     try:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        tmp = DISMISSED_FILE + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(sorted(paths), f, ensure_ascii=False, indent=0)
-        os.replace(tmp, DISMISSED_FILE)
+            json.dump({"grab": 1, **meta}, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
     except OSError as e:
-        print(f"grabd: could not save {DISMISSED_FILE} ({e})", flush=True)
+        print(f"grabd: could not write {path} ({e})", flush=True)
+
+
+def remove_meta(mp3):
+    try:
+        os.remove(meta_path(mp3))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        print(f"grabd: could not remove {meta_path(mp3)} ({e})", flush=True)
 
 
 def fname(t):
@@ -244,6 +259,8 @@ class Item:
         self.file = ""
         self.duration = 0.0
         self.error = ""
+        self.started = ""                  # ISO time the recording started
+        self.input_desc = ""               # input as recorded, if no longer known (recovered)
         # recording internals
         self.sink = ""
         self.sink_node = None
@@ -410,7 +427,6 @@ class Recorder:
         self.queue = EncodeQueue(self.encoded)
         self.stopping = False
         self.players = None                # Players, once the bus is up
-        self.dismissed = load_dismissed()  # paths of files not to list again
         self._emit = None
         self._timers = {}
 
@@ -562,7 +578,9 @@ class Recorder:
         s = item.stream
         item.error = ""
         item.sink = f"grab_{s.idx}_{next(self.counter)}"
-        base = f"{time.strftime('%Y-%m-%d_%H-%M-%S')}_{fname(item.title)}"
+        now = time.localtime()
+        item.started = time.strftime("%Y-%m-%dT%H:%M:%S", now)
+        base = f"{time.strftime('%Y-%m-%d_%H-%M-%S', now)}_{fname(item.title)}"
         item.flac = os.path.join(OUTDIR, f".{base}.flac")
         item.mp3 = os.path.join(OUTDIR, f"{base}.mp3")
         ch = len(s.channel_map.split(","))
@@ -630,45 +648,50 @@ class Recorder:
         if item.state in FINISHED:
             self.items.pop(item.id, None)
             if item.file:
-                self.dismissed.add(item.file)
-                save_dismissed(self.dismissed)
+                remove_meta(item.file)
             self.changed()
 
     # ---- files in the recordings folder
 
     async def scan_files(self):
-        """List MP3s that no item owns as done items; drop done items whose
-        file is gone."""
+        """List MP3s that have metadata and no item as done items; drop done
+        items whose MP3 or metadata is gone; remove metadata of deleted MP3s."""
         if self.stopping:
             return
         try:
             names = os.listdir(OUTDIR)
         except OSError:
             return                         # don't take an unreadable folder for an empty one
-        present = {os.path.join(OUTDIR, n) for n in names
-                   if n.endswith(".mp3") and not n.startswith(".")}
+        visible = [n for n in names if not n.startswith(".")]
+        present = {os.path.join(OUTDIR, n) for n in visible if n.endswith(".mp3")}
+        described = {p for p in present if os.path.exists(meta_path(p))}
         changed = False
 
         for item in list(self.items.values()):
-            if item.state == "done" and item.file not in present:
+            if item.state == "done" and item.file not in described:
                 self.items.pop(item.id, None)
                 changed = True
 
         owned = {p for i in self.items.values() for p in (i.mp3, i.file) if p}
-        for path in sorted(present - owned - self.dismissed):
-            sec = await duration(path)
+        for path in sorted(described - owned):
+            meta = read_meta(path)
+            if meta is None:
+                continue
+            title = meta.get("title") or re.sub(TIMESTAMP_RE, "", os.path.basename(path)[:-4])
+            item = Item(title=title or "audio", app=meta.get("app", ""))
+            item.state, item.file, item.mp3 = "done", path, path
+            item.started = meta.get("started", "")
+            item.duration = meta.get("duration") or await duration(path)
             if any(path in (i.mp3, i.file) for i in self.items.values()):
                 continue                   # an item claimed it meanwhile
-            title = re.sub(TIMESTAMP_RE, "", os.path.basename(path)[:-4]) or "audio"
-            item = Item(title=title, app="file")
-            item.state, item.file, item.mp3, item.duration = "done", path, path, sec
             self.items[item.id] = item
             changed = True
 
-        gone = {p for p in self.dismissed if p not in present}
-        if gone:
-            self.dismissed -= gone
-            save_dismissed(self.dismissed)
+        for n in visible:                  # metadata whose MP3 was deleted
+            if n.endswith(".json"):
+                mp3 = os.path.join(OUTDIR, n[:-5] + ".mp3")
+                if mp3 not in present and read_meta(mp3) is not None:
+                    remove_meta(mp3)
         if changed:
             self.changed()
 
@@ -677,6 +700,9 @@ class Recorder:
     async def encoded(self, item, final, ok, saved, sec):
         if saved:
             item.file, item.duration = item.mp3, sec
+            write_meta(item.mp3, {"title": item.title, "app": item.app,
+                                  "started": item.started, "duration": sec,
+                                  "input": item.input_desc or self.input_description(item.input)})
         if not ok:
             item.error = "encoding failed; FLAC kept"
         if final:
@@ -696,9 +722,14 @@ class Recorder:
     def recover_orphans(self):
         for flac in sorted(glob.glob(os.path.join(OUTDIR, ".*.flac"))):
             base = os.path.basename(flac)[1:-5]
+            mp3 = os.path.join(OUTDIR, base + ".mp3")
+            meta = read_meta(mp3) or {}    # from a pause snapshot, if there was one
             title = base.split("_", 2)[2] if base.count("_") >= 2 else base
-            item = Item(title=title, app="recovered")
-            item.flac, item.mp3 = flac, os.path.join(OUTDIR, base + ".mp3")
+            item = Item(title=meta.get("title") or title, app=meta.get("app") or "recovered")
+            m = re.match(r"(\d{4}-\d\d-\d\d)_(\d\d)-(\d\d)-(\d\d)_", base)
+            item.started = meta.get("started") or (f"{m[1]}T{m[2]}:{m[3]}:{m[4]}" if m else "")
+            item.input_desc = meta.get("input", "")
+            item.flac, item.mp3 = flac, mp3
             item.state = "encoding"
             self.items[item.id] = item
             self.queue.request(item, final=True)
