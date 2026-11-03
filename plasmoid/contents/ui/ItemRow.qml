@@ -120,7 +120,8 @@ Item {
             // as tall as with the mic icon, so selecting an input doesn't shift the layout
             Layout.minimumHeight: Kirigami.Units.iconSizes.small
             Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing
-            Layout.bottomMargin: -Kirigami.Units.smallSpacing
+            // gap to the title: about twice the space between title lines
+            Layout.bottomMargin: Kirigami.Units.smallSpacing / 2
             spacing: 0
             readonly property bool alert: row.itemState === "failed" || row.error !== ""
             readonly property color textColor: alert ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
