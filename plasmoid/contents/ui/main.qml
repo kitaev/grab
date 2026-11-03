@@ -1,5 +1,5 @@
-// Grab: system tray widget for the grabd recording service. A grey dot (red
-// while recording) opens a popup with a row per stream: record/pause, the
+// Grab: system tray widget for the grabd recording service. A microphone in a
+// ring (red while recording) opens a popup with a row per stream: record/pause, the
 // microphone to mix in, and for finished recordings Show in folder / Remove.
 // Status follows "shown when relevant": passive with nothing to show, active
 // otherwise.
@@ -19,9 +19,9 @@ PlasmoidItem {
 
     readonly property bool recording: backend.recordingCount > 0
 
-    Plasmoid.icon: "media-record"
+    Plasmoid.icon: "audio-input-microphone"
     // Active (not NeedsAttention) while recording: the tray animates needs-attention
-    // icons, and the red dot already says we're recording.
+    // icons, and the red ring already says we're recording.
     Plasmoid.status: !backend.available || recording || backend.count > 0
                    ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
 
@@ -42,14 +42,26 @@ PlasmoidItem {
         acceptedButtons: Qt.LeftButton
         onClicked: root.expanded = !root.expanded
 
+        // A microphone in a ring: white, the ring red while recording.
         Rectangle {
+            id: ring
             anchors.centerIn: parent
-            width: Math.round(Math.min(compact.width, compact.height) * 0.76 / 2) * 2
+            width: Math.round(Math.min(compact.width, compact.height) * 0.84 / 2) * 2
             height: width
             radius: width / 2
-            color: root.recording ? "#da4453" : "#8a8a8a"
-            border.width: compact.containsMouse ? 1 : 0
-            border.color: Kirigami.Theme.highlightColor
+            color: "transparent"
+            border.width: Math.max(1.5, Math.round(width * 0.09 * 2) / 2)
+            border.color: root.recording ? "#da4453"
+                        : compact.containsMouse ? Kirigami.Theme.highlightColor : "white"
+
+            Kirigami.Icon {
+                anchors.centerIn: parent
+                width: Math.round(ring.width * 0.62)
+                height: width
+                source: "audio-input-microphone-symbolic"
+                isMask: true
+                color: "white"
+            }
         }
     }
 
