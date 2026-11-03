@@ -53,11 +53,15 @@ Item {
                            : `${Math.floor(sec / 60)}:${two(sec % 60)}`;
     }
 
-    // Status line: stateText, then (with an input) a mic icon and inputText, e.g.
-    // "Recording · 🎤 Brio 500 Analog Stereo", "Paused · 🎤 Default (…) · saved 0:42"
+    // Status line: the state, a muted-speaker icon if playback is muted, then
+    // "·" and (with an input) a mic icon, the input and the rest, e.g.
+    // "Recording 🔇 · 🎤 Brio 500 Analog Stereo", "Paused · saved 0:42"
     readonly property bool showInput: !finished && input !== ""
-    readonly property string stateText: showInput ? statusHead : [statusHead].concat(statusRest).join(" · ")
-    readonly property string inputText: [input_description].concat(statusRest).join(" · ")
+    readonly property bool showMuted: !finished && muted
+    readonly property bool split: showInput || showMuted   // icons: state, tail in separate labels
+    readonly property var statusTail: (showInput ? [input_description] : []).concat(statusRest)
+    readonly property string stateText: split ? statusHead : [statusHead].concat(statusRest).join(" · ")
+    readonly property string inputText: statusTail.join(" · ")
     readonly property string statusHead: {
         return {
             "available": "Ready to record",
@@ -73,8 +77,6 @@ Item {
         const parts = [];
         if (itemState === "paused" && file)
             parts.push(`saved ${mmss(duration)}`);
-        if (muted && !finished)
-            parts.push("playback muted");
         if (error && itemState !== "failed")    // failed already says why
             parts.push(error);
         if (busy && active)
@@ -132,18 +134,30 @@ Item {
 
             PlasmaComponents3.Label {
                 objectName: "statusLabel"
-                Layout.fillWidth: !row.showInput
+                Layout.fillWidth: !row.split
                 text: row.stateText
                 elide: Text.ElideRight
                 font: Kirigami.Theme.smallFont
                 color: statusLine.textColor
             }
             FontMetrics { id: statusMetrics; font: Kirigami.Theme.smallFont }
+            Kirigami.Icon {
+                id: mutedIcon
+                objectName: "mutedIcon"
+                // transparent margin around the speaker glyph: ~1 of 16 px (Breeze)
+                readonly property real padding: Math.round(implicitWidth * 0.0625)
+                visible: row.showMuted
+                Layout.leftMargin: statusMetrics.advanceWidth(" ") - padding
+                source: "audio-volume-muted"
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: implicitWidth
+                color: statusLine.textColor
+            }
             PlasmaComponents3.Label {      // "·" with a space's width on both sides
                 objectName: "statusDot"
-                visible: row.showInput
-                Layout.leftMargin: statusMetrics.advanceWidth(" ")
-                Layout.rightMargin: statusMetrics.advanceWidth(" ") - micIcon.padding
+                visible: row.split && row.statusTail.length > 0
+                Layout.leftMargin: statusMetrics.advanceWidth(" ") - (row.showMuted ? mutedIcon.padding : 0)
+                Layout.rightMargin: statusMetrics.advanceWidth(" ") - (row.showInput ? micIcon.padding : 0)
                 text: "·"
                 font: Kirigami.Theme.smallFont
                 color: statusLine.textColor
@@ -160,9 +174,13 @@ Item {
                 implicitHeight: implicitWidth
                 color: statusLine.textColor
             }
+            Item {                         // keeps "state 🔇" left-aligned when nothing follows
+                Layout.fillWidth: true
+                visible: row.split && row.statusTail.length === 0
+            }
             PlasmaComponents3.Label {
                 objectName: "inputLabel"
-                visible: row.showInput
+                visible: row.split && row.statusTail.length > 0
                 Layout.fillWidth: true
                 text: row.inputText
                 elide: Text.ElideRight
