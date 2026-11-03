@@ -801,7 +801,7 @@ class Recorder:
             mp3 = os.path.join(OUTDIR, base + ".mp3")
             meta = read_meta(mp3) or {}    # from a pause snapshot, if there was one
             title = base.split("_", 2)[2] if base.count("_") >= 2 else base
-            item = Item(title=meta.get("title") or title, app=meta.get("app") or "recovered")
+            item = Item(title=meta.get("title") or title, app=meta.get("app", ""))
             m = re.match(r"(\d{4}-\d\d-\d\d)_(\d\d)-(\d\d)-(\d\d)_", base)
             item.started = meta.get("started") or (f"{m[1]}T{m[2]}:{m[3]}:{m[4]}" if m else "")
             item.input_desc = meta.get("input", "")

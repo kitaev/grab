@@ -55,6 +55,7 @@ ColumnLayout {
                     index: entry.index
                     itemId: entry.model.itemId
                     title: entry.model.title
+                    app: entry.model.app
                     itemState: entry.model.itemState
                     busy: entry.model.busy
                     pending: entry.model.pending

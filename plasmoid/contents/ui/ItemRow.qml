@@ -14,6 +14,7 @@ Item {
     required property int index
     required property string itemId
     required property string title
+    required property string app
     required property string itemState
     required property bool busy
     required property bool pending
@@ -49,7 +50,7 @@ Item {
             "recording": "Recording",
             "paused": file ? `Paused · saved ${mmss(duration)}` : "Paused",
             "encoding": "Encoding…",
-            "done": `Saved · ${mmss(duration)}`,
+            "done": (app ? `Saved from ${app}` : "Saved") + ` · ${mmss(duration)}`,
             "empty": "Nothing recorded",
             "failed": `Failed: ${error || "unknown error"}`,
         }[itemState] || itemState;
