@@ -1,7 +1,7 @@
 // One grabd item: the status line, then record/pause (or, for a recording, a
 // file icon) left of the title and a "⋮" actions menu on the right. Streams'
 // menu: Microphone (the input mixed in), Save Now, Show in Folder, Remove
-// Record; recordings': Show in Folder, Remove Entry (and Data). The status
+// Recording; recordings': Show in Folder, Remove Entry (and Data). The status
 // line names the selected input.
 import QtQuick
 import QtQuick.Layouts
@@ -304,7 +304,7 @@ Item {
                     PlasmaComponents3.MenuSeparator {}
                     PlasmaComponents3.MenuItem {
                         objectName: "removeRecord"
-                        text: "Remove Record"
+                        text: "Remove Recording"
                         icon.name: "user-trash"
                         enabled: row.file !== "" && row.active && !row.toggling
                         onTriggered: row.recorder.removeRecord(row.itemId)

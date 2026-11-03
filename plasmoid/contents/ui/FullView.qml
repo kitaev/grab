@@ -1,6 +1,6 @@
-// The popup: a Streams tab (what can be or is being recorded) and a Records
+// The popup: a Streams tab (what can be or is being recorded) and a Recordings
 // tab (finished recordings), and a footer with the recordings folder and,
-// on Records, Remove All Finished.
+// on Recordings, Remove All Finished.
 import QtQuick
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
@@ -34,7 +34,7 @@ ColumnLayout {
             text: "Streams"
         }
         PlasmaComponents3.TabButton {
-            text: "Records"
+            text: "Recordings"
         }
     }
 
