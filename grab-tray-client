@@ -5,7 +5,7 @@ Shows grabd's items (recordable streams, recordings, finished files) in a
 tray menu that opens on left and right click (StatusNotifierItem with
 ItemIsMenu, works on Wayland). Per item: Record / Pause / Resume, the
 microphone input mixed into the recording, and for finished items (including
-MP3s grabd found in the recordings folder) Open, Show in folder, Remove Entry,
+MP3s grabd found in the recordings folder) Show in folder, Remove Entry,
 Remove Entry and Data (files go to the Trash).
 Reports Status for KDE's "Shown when relevant".
 
@@ -506,8 +506,9 @@ class Tray:
 
         if it.get("file") and os.path.exists(it["file"]):
             children.append({"separator": True})
-            children.append({"label": "Open", "icon": "media-playback-start",
-                             "action": (lambda p=it["file"]: self.open_path(p))})
+            if st not in ("done", "empty", "failed"):
+                children.append({"label": "Open", "icon": "media-playback-start",
+                                 "action": (lambda p=it["file"]: self.open_path(p))})
             children.append({"label": "Show in folder", "icon": "folder-open",
                              "action": (lambda p=it["file"]: self.show_in_folder(p))})
 
