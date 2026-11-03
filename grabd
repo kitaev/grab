@@ -26,11 +26,13 @@ input_description, file, duration, error.
   error:   why the last start failed (state stays available), or for
            finished items what went wrong
 
-Recording: two hidden virtual null sinks per recording, one for the app stream
-and one for the chosen input, linked alongside their normal routing; one
-ffmpeg gates the input's background noise, mixes both and writes a lossless
-FLAC with silence removed. If the input's source goes away or changes (mic
-unplugged and replugged, new default), it is relinked. Pause unlinks and saves an MP3
+Recording: one hidden 4-channel virtual null sink per recording; the app stream
+is linked (alongside its normal routing) into its first two channels and the
+chosen input into the other two. One ffmpeg captures it as a single stream
+("Grab: <title>" in volume controls), splits the channels, gates the input's
+background noise, mixes both and writes a lossless FLAC with silence removed.
+If the input's source goes away or changes (mic unplugged and replugged, new
+default), it is relinked. Pause unlinks and saves an MP3
 snapshot; resume relinks and appends. When the stream disappears the item is
 finalized (state encoding -> done/empty/failed) and stays until removed.
 Encodes are serialized in one background queue and coalesced per item.
@@ -67,8 +69,16 @@ OUTDIR = os.path.expanduser("~/Music/grab")
 AF = ("silenceremove=start_periods=1:start_threshold=-90dB:stop_periods=-1:"
       "stop_duration=1:stop_threshold=-90dB:stop_silence=0.2:detection=peak")
 MIC_GATE_DB = -45          # input quieter than this is muted, so its noise isn't "sound"
-MIX = (f"[1:a]agate=threshold={10 ** (MIC_GATE_DB / 20):.6f}:range=0:attack=5:release=300[mic];"
-       f"[0:a][mic]amix=inputs=2:duration=longest:normalize=0,{AF}")
+# The recording sink's channels: the stream in FL/FR, the input in FC/LFE (names
+# don't matter on a hidden sink). This is the map ffmpeg's 4-channel pulse
+# capture uses, so nothing is remixed on the way in.
+SINK_MAP = "front-left,front-right,front-center,lfe"
+STREAM_CH = ("FL", "FR")
+INPUT_CH = ("FC", "LFE")
+MIX = (f"[0:a]pan=stereo|c0=c0|c1=c1[stream];"
+       f"[0:a]pan=stereo|c0=c2|c1=c3,"
+       f"agate=threshold={10 ** (MIC_GATE_DB / 20):.6f}:range=0:attack=5:release=300[mic];"
+       f"[stream][mic]amix=inputs=2:duration=longest:normalize=0,{AF}")
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
@@ -207,15 +217,28 @@ async def node_ports():
     return nodes
 
 
-def pair_ports(outs, ins):
-    """Match by channel; mono -> every input; otherwise by position."""
-    by_ch = {ch: pid for ch, pid in ins}
-    pairs = [(pid, by_ch[ch]) for ch, pid in outs if ch in by_ch]
-    if pairs:
-        return pairs
-    if len(outs) == 1:
-        return [(outs[0][1], pid) for _ch, pid in ins]
-    return [(o[1], i[1]) for o, i in zip(outs, ins)]
+def route_ports(outs, ins, left, right):
+    """Pairs (out port, in port) sending each source channel to the left or
+    right one of the target channels: a single channel, mono or centre goes to
+    both, LFE is dropped, names ending in L/R (FL, RL, SL, FLC, ...) go to that
+    side, anything else (AUXn) alternates."""
+    targets = {ch: pid for ch, pid in ins}
+    pairs = []
+    for idx, (ch, pid) in enumerate(outs):
+        ch = (ch or "").upper()
+        side = ch[:-1] if len(ch) > 2 and ch.endswith("C") else ch    # FLC -> FL
+        if len(outs) == 1 or ch in ("MONO", "FC", "RC", "TC", "TFC", "TRC"):
+            dst = (left, right)
+        elif ch == "LFE":
+            dst = ()
+        elif side.endswith("L"):
+            dst = (left,)
+        elif side.endswith("R"):
+            dst = (right,)
+        else:
+            dst = (left,) if idx % 2 == 0 else (right,)
+        pairs += [(pid, targets[d]) for d in dst if d in targets]
+    return pairs
 
 
 # ------------------------------------------------------------------ model
@@ -228,7 +251,6 @@ class Stream:
         self.media = p.get("media.name", "")
         self.app = p.get("application.name", "Audio")
         self.corked = si.get("corked", False)
-        self.channel_map = si.get("channel_map") or "front-left,front-right"
         self.player_title = player_title   # from the app's MPRIS player, if any
 
     @staticmethod
@@ -282,9 +304,6 @@ class Item:
         self.sink = ""
         self.sink_node = None
         self.module = None
-        self.mic_sink = ""                 # the input's sink, mixed in by ffmpeg
-        self.mic_node = None
-        self.mic_module = None
         self.input_node = None             # source node the input is linked from now
         self.proc = None
         self.flac = ""
@@ -561,13 +580,14 @@ class Recorder:
             await asyncio.sleep(0.2)
         return None
 
-    async def _link(self, src, dst):
+    async def _link(self, src, dst, channels):
+        """Link node src's outputs into dst's input channels (left, right)."""
         for _ in range(25):
             ports = await node_ports()
             outs = ports.get(src, {}).get("output", [])
             ins = ports.get(dst, {}).get("input", [])
             if outs and ins:
-                pairs = pair_ports(outs, ins)
+                pairs = route_ports(outs, ins, *channels)
                 for o, i in pairs:
                     await run("pw-link", str(o), str(i))
                 return pairs
@@ -580,12 +600,12 @@ class Recorder:
         pairs.clear()
 
     async def _link_input(self, item):
-        """(Re)link the item's input source into its mic sink."""
+        """(Re)link the item's input source into its sink's input channels."""
         await self._unlink(item.input_links)
         item.input_node = None
         src = self._source_node(item.input) if item.input else None
-        if src and item.mic_node:
-            item.input_links = await self._link(src, item.mic_node)
+        if src and item.sink_node:
+            item.input_links = await self._link(src, item.sink_node, INPUT_CH)
             if item.input_links:
                 item.input_node = src
 
@@ -593,11 +613,10 @@ class Recorder:
         await self._unlink(item.input_links)
         item.input_node = None
 
-    async def _load_sink(self, name, s, description):
-        ch = len(s.channel_map.split(","))
+    async def _load_sink(self, name, description):
         rc, out = await run(
             "pactl", "load-module", "module-null-sink",
-            f"sink_name={name}", f"channels={ch}", f"channel_map={s.channel_map}",
+            f"sink_name={name}", "channels=4", f"channel_map={SINK_MAP}",
             f"sink_properties='node.virtual=true device.description=\"{description}\" "
             "device.icon_name=\"media-record\"'")
         return out.strip() if rc == 0 else None
@@ -627,7 +646,8 @@ class Recorder:
                     asyncio.get_running_loop().call_later(
                         SAVE_DELAY, lambda: (self.queue.request(item), self.changed()))
                 elif item.state == "paused" and item.stream:
-                    item.stream_links = await self._link(item.stream.node, item.sink_node)
+                    item.stream_links = await self._link(item.stream.node, item.sink_node,
+                                                         STREAM_CH)
                     await self._link_input(item)
                     item.state = "recording"
                     self.changed()
@@ -644,23 +664,20 @@ class Recorder:
         base = f"{time.strftime('%Y-%m-%d_%H-%M-%S', now)}_{fname(item.title)}"
         item.flac = os.path.join(OUTDIR, f".{base}.flac")
         item.mp3 = os.path.join(OUTDIR, f"{base}.mp3")
-        item.mic_sink = item.sink + "_mic"
-        item.module = await self._load_sink(item.sink, s, "Grab")
-        item.mic_module = await self._load_sink(item.mic_sink, s, "Grab input")
-        if not item.module or not item.mic_module:
+        item.module = await self._load_sink(item.sink, "Grab")
+        if not item.module:
             item.error = "could not create sink"
-            await self._teardown(item)
             self.changed()
             return
         item.sink_node = await self._sink_node(item.sink)
-        item.mic_node = await self._sink_node(item.mic_sink)
         item.proc = await asyncio.create_subprocess_exec(
             "ffmpeg", "-nostdin", "-loglevel", "error",
-            "-f", "pulse", "-i", f"{item.sink}.monitor",
-            "-f", "pulse", "-i", f"{item.mic_sink}.monitor",
+            "-f", "pulse", "-channels", "4", "-name", "Grab", "-stream_name", f"Grab: {item.title}",
+            "-i", f"{item.sink}.monitor",
             "-filter_complex", MIX, "-c:a", "flac", "-flush_packets", "1", item.flac,
             stdin=asyncio.subprocess.DEVNULL)
-        item.stream_links = await self._link(s.node, item.sink_node) if item.sink_node else []
+        item.stream_links = (await self._link(s.node, item.sink_node, STREAM_CH)
+                             if item.sink_node else [])
         if not item.stream_links:
             item.error = "could not connect to the stream"
             await self._teardown(item)
@@ -689,10 +706,9 @@ class Recorder:
                 await asyncio.wait_for(item.proc.wait(), 15)
             except asyncio.TimeoutError:
                 item.proc.kill()
-        for attr in ("module", "mic_module"):
-            if getattr(item, attr):
-                await run("pactl", "unload-module", getattr(item, attr))
-                setattr(item, attr, None)
+        if item.module:
+            await run("pactl", "unload-module", item.module)
+            item.module = None
 
     async def finalize(self, item):
         async with item.op:
