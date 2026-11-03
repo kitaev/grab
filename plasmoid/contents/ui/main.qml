@@ -42,23 +42,29 @@ PlasmoidItem {
         acceptedButtons: Qt.LeftButton
         onClicked: root.expanded = !root.expanded
 
-        // A microphone in a ring: in the theme's text color, the ring red while recording.
-        Rectangle {
-            id: ring
+        // A microphone in a ring, like Breeze's media-playback-* icons (the
+        // Media Player's tray icon): on their 22 px grid a 16 px ring with a
+        // 1 px line around a small symbol. Theme text colour; the ring is red
+        // while recording.
+        Item {
+            id: icon
             anchors.centerIn: parent
-            width: Math.round(Math.min(compact.width, compact.height) * 0.84 / 2) * 2
+            width: Math.min(compact.width, compact.height)
             height: width
-            radius: width / 2
-            color: "transparent"
-            border.width: Math.max(1.5, Math.round(width * 0.09 * 2) / 2)
-            border.color: root.recording ? "#da4453"
-                        : compact.containsMouse ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
 
-            Kirigami.Icon {
+            Rectangle {
                 anchors.centerIn: parent
-                width: Math.round(ring.width * 0.62)
+                width: Math.round(icon.width * 16 / 22)
                 height: width
-                source: "audio-input-microphone-symbolic"
+                radius: width / 2
+                color: "transparent"
+                border.width: Math.max(1, Math.round(icon.width / 22))
+                border.color: root.recording ? "#da4453"
+                            : compact.containsMouse ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
+            }
+            Kirigami.Icon {
+                anchors.fill: parent
+                source: Qt.resolvedUrl("../icons/grab-mic.svg")
                 isMask: true
                 color: Kirigami.Theme.textColor
             }
