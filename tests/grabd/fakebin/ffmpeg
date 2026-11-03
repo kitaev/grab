@@ -1,0 +1,3 @@
+#!/bin/sh
+# Stands in for ffmpeg in tests: runs until stopped, like a recording.
+exec sleep 30

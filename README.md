@@ -163,6 +163,7 @@ The full D-Bus API is described at the top of `grabd`.
 | `grabd.service` | systemd user unit |
 | `packaging/` | D-Bus activation file, PKGBUILD template, install hooks |
 | `build.sh` | package build |
+| `tests/` | tests for grabd and the widget |
 
 To test the widget without installing it:
 
@@ -175,3 +176,21 @@ For this to load your working copy, the widget must be found under
 directory that contains a copy or symlink of `plasmoid/`. Don't install it
 user-locally with `kpackagetool6`: a user-local copy overrides the packaged
 widget.
+
+### Tests
+
+```sh
+tests/run.sh            # everything
+tests/run.sh grabd      # grabd only
+tests/run.sh qml        # the widget only
+```
+
+- **grabd** (`tests/grabd/`, Python's `unittest`): the tests load `grabd` as a
+  module. Its folders go in a temporary directory, PipeWire is faked and
+  `tests/grabd/fakebin/ffmpeg` stands in for ffmpeg. They don't touch your
+  recordings or audio.
+- **The widget** (`tests/qml/`, Qt 6's `qmltestrunner`, offscreen): the Shift
+  menus, the Share submenu and the Delete All confirmation. The Share test
+  needs Purpose's plugins installed.
+
+The script exits non-zero if any test fails.
