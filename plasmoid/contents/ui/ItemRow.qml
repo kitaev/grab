@@ -53,9 +53,9 @@ Item {
                            : `${Math.floor(sec / 60)}:${two(sec % 60)}`;
     }
 
-    // Status line: the state, a muted-speaker icon if playback is muted, then
-    // "·" and (with an input) a mic icon, the input and the rest, e.g.
-    // "Recording 🔇 · 🎤 Brio 500 Analog Stereo", "Paused · saved 0:42"
+    // Status line: the state, "· 🔇" if playback is muted, then "·" and (with an
+    // input) a mic icon, the input and the rest, e.g.
+    // "Recording · 🔇 · 🎤 Brio 500 Analog Stereo", "Paused · saved 0:42"
     readonly property bool showInput: !finished && input !== ""
     readonly property bool showMuted: !finished && muted
     readonly property bool split: showInput || showMuted   // icons: state, tail in separate labels
@@ -141,13 +141,21 @@ Item {
                 color: statusLine.textColor
             }
             FontMetrics { id: statusMetrics; font: Kirigami.Theme.smallFont }
+            PlasmaComponents3.Label {      // "·" between the state and the muted icon
+                objectName: "mutedDot"
+                visible: row.showMuted
+                Layout.leftMargin: statusMetrics.advanceWidth(" ")
+                Layout.rightMargin: statusMetrics.advanceWidth(" ") - mutedIcon.padding
+                text: "·"
+                font: Kirigami.Theme.smallFont
+                color: statusLine.textColor
+            }
             Kirigami.Icon {
                 id: mutedIcon
                 objectName: "mutedIcon"
                 // transparent margin around the speaker glyph: ~1 of 16 px (Breeze)
                 readonly property real padding: Math.round(implicitWidth * 0.0625)
                 visible: row.showMuted
-                Layout.leftMargin: statusMetrics.advanceWidth(" ") - padding
                 source: "audio-volume-muted"
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: implicitWidth
