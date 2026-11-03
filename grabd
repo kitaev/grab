@@ -13,6 +13,8 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   SaveNow(s id)                         save an MP3 snapshot of a recording/paused item now
   SetPlaybackMuted(s id, b muted)       stop/resume playing a stream on its device; it is
                                         still recorded (see "Muted playback" below)
+  SetEchoCancel(s id, b on)             cancel the speakers' echo in the item's input
+                                        (default on; see "Echo cancellation" below)
   Meters(b on)                          stream level meters: on for 5 s after each call
                                         (clients repeat it while they show levels)
   signal Levels(s)                      while meters are on, ~15 times a second: JSON
@@ -27,7 +29,7 @@ Bus name org.grab.Recorder, object /org/grab/Recorder, interface org.grab.Record
   signal StateChanged(s)                GetState() after any change (for clients
                                         that handle JSON more easily than variants)
 
-Item properties: id, title, app, state, busy, pending, muted, stream, input,
+Item properties: id, title, app, state, busy, pending, muted, echo_cancel, stream, input,
 input_description, file, duration, error.
   state:   available | recording | paused | encoding | done | empty | failed
   busy:    an MP3 snapshot/final encode is queued or running for this item
@@ -54,6 +56,14 @@ The stream's "Play on" metadata is not touched, so WirePlumber saves nothing
 and other streams of the same app are unaffected. Unmuting points the stream's
 target at the silent sink and then at its device (or the default output), so
 WirePlumber links it again, and finally restores the target metadata as it was.
+
+Echo cancellation: the input goes through PipeWire's WebRTC echo canceller
+(with noise suppression) before the recording sink, with the monitor of the
+default output as the echo reference. It runs in a separate "pipewire -c"
+process, one per input/output pair, shared by recordings and stopped when
+unused. Its nodes are hidden from pipewire-pulse (Internal media classes, not
+autoconnected; grabd links them), so other apps keep the raw microphone and
+what you hear is untouched.
 
 Level meters: a hidden capture (pw-record, media.class Stream/Input/Audio/
 Internal, so not listed by pipewire-pulse) linked directly to each stream's
@@ -122,6 +132,8 @@ SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
 METER_RATE = 16000         # level meters: capture rate, updates per second, lease
 METER_FPS = 15
 METER_LEASE = 5.0
+AEC_ARGS = "webrtc.noise_suppression = true webrtc.gain_control = false webrtc.high_pass_filter = true"
+RUNTIME_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "grabd")
 
 EXCLUDE_APP_RE = ""        # apps never offered (regex on application.name)
 EXCLUDE_ROLE_RE = r"^(event|notification)$"
@@ -340,6 +352,20 @@ async def pw_graph():
     return nodes, links
 
 
+async def monitor_ports(node):
+    """[(channel, port id)] of a sink's monitor outputs (node_ports() skips them)."""
+    rc, out = await run("pw-dump")
+    try:
+        objs = json.loads(out)
+    except ValueError:
+        return []
+    return [(o["info"]["props"].get("audio.channel"), o["id"]) for o in objs
+            if o.get("type") == "PipeWire:Interface:Port"
+            and str(o["info"]["props"].get("node.id")) == str(node)
+            and o["info"].get("direction") == "output"
+            and o["info"]["props"].get("port.monitor") in (True, "true")]
+
+
 async def stream_target(node):
     """The stream's "target.object" in the default metadata ("Play on"), or None."""
     rc, out = await run("pw-metadata", "-n", "default", node, "target.object")
@@ -425,6 +451,8 @@ class Item:
         self.busy = False
         self.pending = False               # a Toggle is in progress
         self.muted = False                 # playback muted (SetPlaybackMuted)
+        self.echo_cancel = True            # input through the echo canceller
+        self.aec = None                    # the Aec the input is linked through
         self.silent_links = []             # stream -> grab_silent while muted
         self.playback_node = None          # the device it played on before muting
         self.input = ""                    # "" none, "default", or source name
@@ -454,6 +482,7 @@ class Item:
             "busy": Variant("b", self.busy),
             "pending": Variant("b", self.pending),
             "muted": Variant("b", self.muted),
+            "echo_cancel": Variant("b", self.echo_cancel),
             "stream": Variant("b", self.stream is not None),
             "input": Variant("s", self.input),
             "input_description": Variant("s", input_desc),
@@ -590,6 +619,79 @@ class Players:
         return found[0]["title"] if found else ""
 
 
+# ------------------------------------------------------------------ echo cancellation
+
+class Aec:
+    """PipeWire's echo canceller for one input and one output, in its own
+    "pipewire -c" process; hidden nodes, linked by grabd."""
+    serial = itertools.count(1)
+
+    def __init__(self, mic_node, spk_node):
+        self.mic_node, self.spk_node = mic_node, spk_node
+        n = next(Aec.serial)
+        self.names = {k: f"grab_aec_{n}_{k}" for k in ("capture", "ref", "source")}
+        self.conf = os.path.join(RUNTIME_DIR, f"aec_{os.getpid()}_{n}.conf")
+        self.proc, self.source = None, None
+        self.users = set()                 # items using it
+
+    async def start(self, rec):
+        os.makedirs(RUNTIME_DIR, exist_ok=True)
+        hidden = "state.restore-props = false state.restore-target = false"
+        with open(self.conf, "w") as f:
+            f.write(f"""
+context.properties = {{ log.level = 1 }}
+context.spa-libs = {{ audio.convert.* = audioconvert/libspa-audioconvert  support.* = support/libspa-support }}
+context.modules = [
+  {{ name = libpipewire-module-rt args = {{ }} flags = [ ifexists nofail ] }}
+  {{ name = libpipewire-module-protocol-native }}
+  {{ name = libpipewire-module-client-node }}
+  {{ name = libpipewire-module-adapter }}
+  {{ name = libpipewire-module-echo-cancel args = {{
+      library.name = aec/libspa-aec-webrtc
+      monitor.mode = true
+      aec.args = {{ {AEC_ARGS} }}
+      capture.props = {{ node.name = {self.names["capture"]} media.class = Stream/Input/Audio/Internal node.autoconnect = false {hidden} }}
+      sink.props    = {{ node.name = {self.names["ref"]} media.class = Stream/Input/Audio/Internal node.autoconnect = false {hidden} }}
+      source.props  = {{ node.name = {self.names["source"]} media.class = Audio/Source/Internal {hidden} }}
+  }} }}
+]
+""")
+        self.proc = await asyncio.create_subprocess_exec(
+            "pipewire", "-c", self.conf, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        ids = {}
+        for _ in range(50):
+            nodes, _links = await pw_graph()
+            ids = {k: next((i for i, p in nodes.items() if p.get("node.name") == name), None)
+                   for k, name in self.names.items()}
+            if all(ids.values()):
+                break
+            await asyncio.sleep(0.1)
+        if not all(ids.values()):
+            await self.stop()
+            return False
+        # mic -> canceller; output's monitor (what the speakers play) -> reference
+        await rec._link(self.mic_node, ids["capture"], ("FL", "FR"))
+        refs = route_ports(await monitor_ports(self.spk_node),
+                           (await node_ports()).get(ids["ref"], {}).get("input", []), "FL", "FR")
+        for o, i in refs:
+            await run("pw-link", str(o), str(i))
+        self.source = ids["source"]
+        return True
+
+    async def stop(self):
+        if self.proc and self.proc.returncode is None:
+            self.proc.terminate()
+            try:
+                await asyncio.wait_for(self.proc.wait(), 5)
+            except asyncio.TimeoutError:
+                self.proc.kill()
+        try:
+            os.remove(self.conf)
+        except OSError:
+            pass
+
+
 # ------------------------------------------------------------------ level meters
 
 class Meter:
@@ -661,6 +763,8 @@ class Recorder:
         self.players = None                # Players, once the bus is up
         self.silent_module = None          # grab_silent, while any playback is muted
         self.meters = {}                   # item -> Meter, while meters are on
+        self.aecs = {}                     # (input node, output node) -> Aec
+        self.default_sink = ""
         self.meters_until = 0.0            # Meters() lease
         self.meter_task = None
         self._emit = None
@@ -761,13 +865,22 @@ class Recorder:
             self.sources, self.default_source = sources, default
             if self.iface:
                 self.iface.InputsChanged()
-            for item in list(self.items.values()):
-                if item.state == "recording" and item.input \
-                        and self._source_node(item.input) != item.input_node:
-                    async with item.op:
-                        if item.state == "recording":
-                            await self._link_input(item)
+            await self._relink_inputs()
             self.changed()
+        elif any(i.aec for i in self.items.values()):
+            await self._relink_inputs()        # the default output may have changed
+
+    async def _relink_inputs(self):
+        """Relink recording inputs whose source, or echo reference, changed."""
+        spk = await self._output_node() if any(i.aec for i in self.items.values()) else None
+        for item in list(self.items.values()):
+            if item.state != "recording" or not item.input:
+                continue
+            stale_aec = item.aec and spk and item.aec.spk_node != str(spk)
+            if self._source_node(item.input) != item.input_node or stale_aec:
+                async with item.op:
+                    if item.state == "recording":
+                        await self._link_input(item)
 
     def _source_node(self, inp):
         name = self.default_source if inp == "default" else inp
@@ -803,18 +916,60 @@ class Recorder:
         pairs.clear()
 
     async def _link_input(self, item):
-        """(Re)link the item's input source into its sink's input channels."""
-        await self._unlink(item.input_links)
-        item.input_node = None
+        """(Re)link the item's input source into its sink's input channels,
+        through the echo canceller if it's on."""
+        await self._unlink_input(item)
         src = self._source_node(item.input) if item.input else None
-        if src and item.sink_node:
-            item.input_links = await self._link(src, item.sink_node, INPUT_CH)
-            if item.input_links:
-                item.input_node = src
+        if not (src and item.sink_node):
+            return
+        feed = src
+        if item.echo_cancel:
+            aec = await self._aec_for(src)
+            if aec:
+                aec.users.add(item)
+                item.aec, feed = aec, aec.source
+        item.input_links = await self._link(feed, item.sink_node, INPUT_CH)
+        if item.input_links:
+            item.input_node = src
 
     async def _unlink_input(self, item):
         await self._unlink(item.input_links)
         item.input_node = None
+        if item.aec:
+            aec, item.aec = item.aec, None
+            aec.users.discard(item)
+            if not aec.users:
+                self.aecs.pop((aec.mic_node, aec.spk_node), None)
+                await aec.stop()
+
+    async def _output_node(self):
+        """Node id of the default output (the echo reference)."""
+        rc, out = await run("pactl", "get-default-sink")
+        self.default_sink = out.strip()
+        nodes, _links = await pw_graph()
+        return next((i for i, p in nodes.items() if p.get("node.name") == self.default_sink), None)
+
+    async def _aec_for(self, mic_node):
+        spk = await self._output_node()
+        if not spk:
+            return None
+        key = (str(mic_node), str(spk))
+        aec = self.aecs.get(key)
+        if not aec:
+            aec = Aec(*key)
+            if not await aec.start(self):
+                return None
+            self.aecs[key] = aec
+        return aec
+
+    async def set_echo_cancel(self, item, on):
+        async with item.op:
+            if item.echo_cancel == on:
+                return
+            item.echo_cancel = on
+            if item.state == "recording" and item.input:
+                await self._link_input(item)
+            self.changed()
 
     async def _load_sink(self, name, description):
         rc, out = await run(
@@ -1182,6 +1337,9 @@ class Recorder:
         await asyncio.gather(*(self.finalize(i) for i in list(self.items.values())
                                if i.state in ACTIVE), return_exceptions=True)
         await self.queue.drain()
+        for aec in list(self.aecs.values()):
+            await aec.stop()
+        self.aecs.clear()
 
 
 # ------------------------------------------------------------------ D-Bus interface
@@ -1232,6 +1390,12 @@ class RecorderInterface(ServiceInterface):
         item = self._item(item_id)
         if item:
             self.rec.save_now(item)
+
+    @method()
+    def SetEchoCancel(self, item_id: "s", on: "b"):
+        item = self._item(item_id)
+        if item and item.state not in FINISHED and item.state != "encoding":
+            self._spawn(self.rec.set_echo_cancel(item, on))
 
     @method()
     def Meters(self, on: "b"):

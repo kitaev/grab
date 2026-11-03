@@ -21,6 +21,7 @@ Item {
     required property bool busy
     required property bool pending
     required property bool muted
+    required property bool echo_cancel
     required property bool stream
     required property string input
     required property string input_description
@@ -384,6 +385,17 @@ Item {
                             }
                             onObjectAdded: (index, object) => micMenu.insertItem(index, object)
                             onObjectRemoved: (index, object) => micMenu.removeItem(object)
+                        }
+                        PlasmaComponents3.MenuSeparator {}
+                        PlasmaComponents3.MenuItem {
+                            objectName: "echoCancel"
+                            text: "Echo Cancellation"
+                            checkable: true
+                            checked: row.echo_cancel
+                            onTriggered: {
+                                row.recorder.setEchoCancel(row.itemId, !row.echo_cancel);
+                                checked = Qt.binding(() => row.echo_cancel);   // grabd's state decides
+                            }
                         }
                     }
                     PlasmaComponents3.MenuItem {

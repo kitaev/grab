@@ -67,6 +67,7 @@ QtObject {
     function removeFinished(withData) { call("RemoveFinished", [withData]); }
     function saveNow(id) { call("SaveNow", [id]); }
     function setPlaybackMuted(id, muted) { call("SetPlaybackMuted", [id, muted]); }
+    function setEchoCancel(id, on) { call("SetEchoCancel", [id, on]); }
     function removeRecord(id) { call("RemoveRecord", [id]); }
 
     function apply(json) {
