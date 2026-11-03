@@ -52,9 +52,13 @@ Item {
                            : `${Math.floor(sec / 60)}:${two(sec % 60)}`;
     }
 
-    // e.g. "Recording · Brio 500 Analog Stereo", "Paused · Default (…) · saved 0:42"
-    readonly property string stateText: {
-        const parts = [{
+    // Status line: stateText, then (with an input) a mic icon and inputText, e.g.
+    // "Recording · 🎤 Brio 500 Analog Stereo", "Paused · 🎤 Default (…) · saved 0:42"
+    readonly property bool showInput: !finished && input !== ""
+    readonly property string stateText: showInput ? statusHead + " ·" : [statusHead].concat(statusRest).join(" · ")
+    readonly property string inputText: [input_description].concat(statusRest).join(" · ")
+    readonly property string statusHead: {
+        return {
             "available": "Ready to record",
             "recording": "Recording",
             "paused": "Paused",
@@ -62,16 +66,17 @@ Item {
             "done": (app ? `Saved from ${app}` : "Saved") + ` · ${mmss(duration)}`,
             "empty": "Nothing recorded",
             "failed": `Failed: ${error || "unknown error"}`,
-        }[itemState] || itemState];
-        if (!finished && input)                 // the input mixed into the recording
-            parts.push(input_description);
+        }[itemState] || itemState;
+    }
+    readonly property var statusRest: {
+        const parts = [];
         if (itemState === "paused" && file)
             parts.push(`saved ${mmss(duration)}`);
         if (error && itemState !== "failed")    // failed already says why
             parts.push(error);
         if (busy && active)
             parts.push("saving…");
-        return parts.join(" · ");
+        return parts;
     }
 
     readonly property var toggleAction: ({
@@ -108,18 +113,41 @@ Item {
         anchors.bottomMargin: Kirigami.Units.smallSpacing * 2
         spacing: Kirigami.Units.smallSpacing
 
-        PlasmaComponents3.Label {          // status, above the title and starting where it starts
-            objectName: "statusLabel"
+        RowLayout {                        // status, above the title and starting where it starts
+            id: statusLine
+            objectName: "statusLine"
             Layout.fillWidth: true
             Layout.leftMargin: lead.implicitWidth + Kirigami.Units.smallSpacing
             Layout.bottomMargin: -Kirigami.Units.smallSpacing
-            horizontalAlignment: Text.AlignLeft
-            text: row.stateText
-            elide: Text.ElideRight
-            font: Kirigami.Theme.smallFont
-            color: row.itemState === "failed" || row.error ? Kirigami.Theme.negativeTextColor
-                                                       : Kirigami.Theme.textColor
-            opacity: row.itemState === "failed" || row.error ? 1 : 0.7
+            spacing: Kirigami.Units.smallSpacing / 2
+            readonly property bool alert: row.itemState === "failed" || row.error !== ""
+            readonly property color textColor: alert ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
+            opacity: alert ? 1 : 0.7
+
+            PlasmaComponents3.Label {
+                objectName: "statusLabel"
+                Layout.fillWidth: !row.showInput
+                text: row.stateText
+                elide: Text.ElideRight
+                font: Kirigami.Theme.smallFont
+                color: statusLine.textColor
+            }
+            Kirigami.Icon {
+                visible: row.showInput
+                source: "audio-input-microphone"
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: implicitWidth
+                color: statusLine.textColor
+            }
+            PlasmaComponents3.Label {
+                objectName: "inputLabel"
+                visible: row.showInput
+                Layout.fillWidth: true
+                text: row.inputText
+                elide: Text.ElideRight
+                font: Kirigami.Theme.smallFont
+                color: statusLine.textColor
+            }
         }
 
         RowLayout {
