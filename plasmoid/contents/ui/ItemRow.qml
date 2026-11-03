@@ -184,7 +184,7 @@ Item {
                     Layout.fillWidth: true
                     text: row.title
                     wrapMode: Text.Wrap
-                    maximumLineCount: 2
+                    maximumLineCount: 4
                     elide: Text.ElideRight
                     font.weight: row.itemState === "recording" ? Font.DemiBold : Font.Normal
                 }
