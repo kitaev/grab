@@ -11,6 +11,10 @@ TimeoutStopSec=600
 # second signal made it exit without writing the trailer.
 KillMode=mixed
 Restart=on-failure
+# grabd exits with 75 when its file was replaced (package upgrade) and nothing
+# is recording: start the new version.
+SuccessExitStatus=75
+RestartForceExitStatus=75
 
 # Started on demand by the tray widget (D-Bus activation, org.grab.Recorder);
 # `systemctl --user enable grabd` starts it at login instead.

@@ -52,11 +52,10 @@ You can also build and install in one step with `./build.sh --install`.
 
 After the first install:
 
-1. Log out and back in, or restart Plasma:
-   `systemctl --user restart plasma-plasmashell`.
-2. The widget appears in the system tray. If it doesn't, turn it on in
+1. The package restarts Plasma, and the widget appears in the system tray.
+   If it doesn't, turn it on in
    **System Tray Settings → Entries**.
-3. You don't have to start grabd yourself: D-Bus starts it as soon as the
+2. You don't have to start grabd yourself: D-Bus starts it as soon as the
    widget asks for it. To start it at login instead, run:
 
    ```sh
@@ -65,13 +64,17 @@ After the first install:
 
 ### Upgrade
 
-Install the new package with `pacman -U`, then run:
+Install the new package with `pacman -U`. You don't need to restart anything
+yourself:
 
-```sh
-systemctl --user daemon-reload
-systemctl --user restart grabd                # ends running recordings, which are saved
-systemctl --user restart plasma-plasmashell   # loads the new widget
-```
+- The package restarts Plasma for each logged-in user, so the new widget loads
+  right away.
+- A running grabd notices that its file was replaced. It restarts into the new
+  version as soon as nothing is recording, paused, encoding or muted. Until
+  then it keeps running the old version.
+
+The only thing lost in that restart is a microphone or echo-cancellation choice
+on a stream that isn't recording.
 
 ### Uninstall
 

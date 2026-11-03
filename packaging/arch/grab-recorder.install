@@ -1,8 +1,26 @@
+# Runs as root, outside the users' sessions: reach each logged-in user's
+# systemd user manager with `systemctl --user -M <user>@`.
+_users() {
+    loginctl list-users --no-legend 2>/dev/null | awk '{print $2}'
+}
+
+# Load the new widget: restart plasmashell where it is running. Recordings are
+# not affected (grabd is a separate service).
+_restart_plasmashell() {
+    local u
+    for u in $(_users); do
+        if systemctl --user -M "$u@" --quiet is-active plasma-plasmashell.service 2>/dev/null; then
+            echo "==> grab-recorder: restarting Plasma for $u to load the widget"
+            systemctl --user -M "$u@" --no-block restart plasma-plasmashell.service 2>/dev/null || true
+        fi
+    done
+}
+
 post_install() {
+    _restart_plasmashell
     cat <<'MSG'
-==> grab-recorder: the "Record What's Playing" widget shows up in the system
-    tray after you log in again (or: systemctl --user restart plasma-plasmashell).
-    If it doesn't, enable it in System Tray Settings > Entries.
+==> grab-recorder: the "Record What's Playing" widget is in the system tray
+    (if not, enable it in System Tray Settings > Entries).
     grabd starts by itself when the widget needs it; to start it at login:
         systemctl --user enable grabd
     Recordings go to the XDG music folder, in "grab" (e.g. ~/Music/grab).
@@ -10,10 +28,9 @@ MSG
 }
 
 post_upgrade() {
+    _restart_plasmashell
     cat <<'MSG'
-==> grab-recorder: to use the new version now:
-        systemctl --user daemon-reload
-        systemctl --user restart grabd            # ends running recordings (saves them)
-        systemctl --user restart plasma-plasmashell
+==> grab-recorder: a running grabd restarts into the new version by itself
+    as soon as nothing is recording.
 MSG
 }

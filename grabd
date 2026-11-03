@@ -92,6 +92,7 @@ import math
 import os
 import re
 import signal
+import sys
 import time
 import urllib.parse
 
@@ -145,6 +146,8 @@ MIX = (f"[0:a]pan=stereo|c0=c0|c1=c1[stream];"
 MIN_SEC = 1.0              # shorter than this after silence removal = nothing recorded
 SAVE_DELAY = 1.0           # wait after unlinking before the pause snapshot
 SCAN_INTERVAL = 5.0        # how often the recordings folder is rescanned
+UPDATE_CHECK_INTERVAL = 5.0  # how often to check whether grabd itself was replaced
+EXIT_UPDATED = 75          # exit status asking systemd to start the new grabd (see grabd.service)
 METER_RATE = 16000         # level meters: capture rate, updates per second, lease
 METER_FPS = 15
 METER_LEASE = 5.0
@@ -1367,6 +1370,12 @@ class Recorder:
             self.items[item.id] = item
             self.queue.request(item, final=True)
 
+    def idle(self):
+        """Nothing a restart would interrupt: no recording (paused counts), no
+        encoding, no Toggle in progress, no muted playback."""
+        return not any(i.state in ACTIVE or i.state == "encoding" or i.busy or i.pending
+                       or i.muted for i in self.items.values())
+
     async def shutdown(self):
         if self.stopping:
             return
@@ -1502,6 +1511,34 @@ async def scan_loop(rec):
         await asyncio.sleep(SCAN_INTERVAL)
 
 
+def file_id(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino, st.st_mtime_ns)
+
+
+async def update_loop(rec, restart):
+    """When grabd's own file is replaced (a package upgrade), wait until
+    nothing is being recorded and then restart into the new version."""
+    path = os.path.realpath(__file__)
+    running = file_id(path)
+    noted = False
+    while True:
+        await asyncio.sleep(UPDATE_CHECK_INTERVAL)
+        now = file_id(path)
+        if now is None or now == running:
+            continue
+        if not noted:
+            print(f"grabd: {path} was updated; restarting when nothing is recording", flush=True)
+            noted = True
+        if rec.idle():
+            print("grabd: restarting into the updated version", flush=True)
+            restart()
+            return
+
+
 async def main():
     os.makedirs(OUTDIR, exist_ok=True)
     rec = Recorder()
@@ -1524,25 +1561,33 @@ async def main():
     await rec.refresh_streams()
 
     stop = asyncio.Event()
+    status = 0
 
     async def on_signal():
         await rec.shutdown()
         stop.set()
+
+    def restart():
+        nonlocal status
+        status = EXIT_UPDATED
+        loop.create_task(on_signal())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, lambda: loop.create_task(on_signal()))
 
     sub = loop.create_task(subscribe(rec))
     scan = loop.create_task(scan_loop(rec))
+    update = loop.create_task(update_loop(rec, restart))
     await stop.wait()
-    for t in (sub, scan, worker):
+    for t in (sub, scan, update, worker):
         t.cancel()
         try:
             await t
         except asyncio.CancelledError:
             pass
     bus.disconnect()
+    return status
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    sys.exit(asyncio.run(main()))
