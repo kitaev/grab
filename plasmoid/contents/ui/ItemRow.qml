@@ -138,6 +138,7 @@ Item {
                 objectName: "statusLabel"
                 Layout.fillWidth: !row.split
                 text: row.stateText
+                textFormat: Text.PlainText     // app names and errors: not markup
                 elide: Text.ElideRight
                 font: Kirigami.Theme.smallFont
                 color: statusLine.textColor
@@ -193,6 +194,7 @@ Item {
                 visible: row.split && row.statusTail.length > 0
                 Layout.fillWidth: true
                 text: row.inputText
+                textFormat: Text.PlainText
                 elide: Text.ElideRight
                 font: Kirigami.Theme.smallFont
                 color: statusLine.textColor
@@ -305,6 +307,9 @@ Item {
                     id: titleLabel
                     Layout.fillWidth: true
                     text: row.title
+                    // titles come from apps and web pages: never render them as
+                    // rich text (markup, remote images)
+                    textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     maximumLineCount: 4
                     elide: Text.ElideRight
