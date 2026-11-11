@@ -29,16 +29,57 @@ PlasmaExtras.Representation {
 
     readonly property bool onRecords: tabs.currentIndex === 1
 
-    // Confirmation before files are deleted for good (Recorder.confirmRequested)
+    // Questions before files are deleted for good or grabd is stopped
+    // (Recorder.confirm). One asked from the tray menu may come before this
+    // view exists: it waits in pendingConfirm.
+    function showConfirm() {
+        const c = view.recorder.pendingConfirm;
+        if (!c)
+            return;
+        view.recorder.pendingConfirm = null;
+        confirmDialog.title = c.title;
+        confirmMessage.text = c.message;
+        confirmAction.text = c.action;
+        confirmAction.icon.name = c.icon || "edit-delete";
+        confirmDialog.proceed = c.proceed;
+        confirmDialog.open();
+    }
     Connections {
         target: view.recorder
-        function onConfirmRequested(title, message, action, proceed) {
-            confirmDialog.title = title;
-            confirmMessage.text = message;
-            confirmAction.text = action;
-            confirmDialog.proceed = proceed;
-            confirmDialog.open();
+        function onConfirmRequested() { view.showConfirm(); }
+    }
+    Component.onCompleted: showConfirm()
+
+    // While grabd isn't running, the lists say why, with a button to enable it
+    readonly property var control: recorder.control
+    readonly property string offText: {
+        switch (control.transition) {
+        case "starting": return "Starting the recorder…";
+        case "stopping": return "Stopping the recorder…";
         }
+        if (!control.known)
+            return "";
+        if (control.unitState === "missing")
+            return "Recorder service not installed";
+        return control.enabled ? "Recorder service not running" : "Recorder disabled";
+    }
+    readonly property string offExplanation: {
+        if (control.transition === "stopping")
+            return "Recordings in progress are being finished and saved.";
+        if (control.busy || !control.known)
+            return "";
+        if (control.unitState === "missing")
+            return "grabd.service wasn't found. Reinstall the grab-recorder package.";
+        return control.enabled ? "Start it to record what applications play."
+                               : "Enable it to record what applications play.";
+    }
+    readonly property Kirigami.Action offAction: Kirigami.Action {
+        objectName: "enableAction"
+        text: view.control.enabled ? "Start Recorder" : "Enable Recorder"
+        icon.name: "media-record"
+        enabled: !view.control.busy
+        visible: view.control.known && !view.control.busy
+        onTriggered: view.recorder.setEnabled(true)
     }
 
     // Share: run the chosen Purpose plugin for a recording. Plugins that need
@@ -192,7 +233,26 @@ PlasmaExtras.Representation {
     contentItem: ColumnLayout {
         spacing: 0
 
+        Kirigami.InlineMessage {           // enabling or disabling grabd failed
+            objectName: "serviceError"
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: view.control.error !== ""
+            type: Kirigami.MessageType.Error
+            text: view.control.error
+            showCloseButton: true
+            onVisibleChanged: if (!visible) view.control.error = ""   // closed
+        }
+        Kirigami.InlineMessage {           // grabd finishes its recordings before it exits
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.smallSpacing
+            visible: view.control.transition === "stopping" && view.recorder.available
+            type: Kirigami.MessageType.Information
+            text: "Stopping the recorder: recordings in progress are being finished and saved…"
+        }
+
         StackLayout {
+            enabled: view.control.transition !== "stopping"
             Layout.fillWidth: true
             Layout.fillHeight: true
             currentIndex: tabs.currentIndex
@@ -201,22 +261,24 @@ PlasmaExtras.Representation {
                 id: streamList
                 recorder: view.recorder
                 model: view.recorder.streams
-                placeholderIcon: view.recorder.available ? "media-record" : "dialog-warning"
-                placeholderText: view.recorder.available ? "No recordable streams" : "Recorder service not running"
+                placeholderIcon: "media-record"
+                placeholderText: view.recorder.available ? "No recordable streams" : view.offText
                 placeholderExplanation: view.recorder.available
-                    ? "Start playing audio in an application to record it."
-                    : "Start it with: systemctl --user start grabd"
+                    ? "Start playing audio in an application to record it." : view.offExplanation
+                placeholderAction: view.recorder.available ? null : view.offAction
+                placeholderBusy: !view.recorder.available && view.control.busy
             }
 
             ItemList {
                 id: recordList
                 recorder: view.recorder
                 model: view.recorder.records
-                placeholderIcon: view.recorder.available ? "audio-x-generic" : "dialog-warning"
-                placeholderText: view.recorder.available ? "No recordings" : "Recorder service not running"
+                placeholderIcon: view.recorder.available ? "audio-x-generic" : "media-record"
+                placeholderText: view.recorder.available ? "No recordings" : view.offText
                 placeholderExplanation: view.recorder.available
-                    ? "Finished recordings appear here."
-                    : "Start it with: systemctl --user start grabd"
+                    ? "Finished recordings appear here." : view.offExplanation
+                placeholderAction: view.recorder.available ? null : view.offAction
+                placeholderBusy: !view.recorder.available && view.control.busy
             }
         }
 

@@ -103,6 +103,21 @@ grabd runs as a systemd *user* service, not a system one, because it needs
 things that only exist in your login session: your PipeWire graph, the session
 D-Bus, your Music folder and your Trash.
 
+## Turning the recorder off
+
+Right-click the tray icon and uncheck **Enable Recorder** to stop grabd. If
+something is recording, you're asked first: the recordings in progress are
+finished and saved. Check it again, or press **Enable Recorder** in the
+popup, to start grabd again.
+
+Disabling also *masks* grabd's user service, as
+`systemctl --user mask --now grabd` does. That is what keeps it off: neither
+the widget nor a login (if you enabled it there) can start it until you enable
+it again. Enabling unmasks it and starts it, and an earlier
+`systemctl --user enable grabd` applies again. The mask is a link at
+`~/.config/systemd/user/grabd.service`. If you keep your own copy of the unit
+there, disabling fails with an error rather than replacing it.
+
 ## Settings
 
 Right-click the tray icon and choose **Configure Record What's Playing…**.

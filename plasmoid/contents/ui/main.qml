@@ -18,6 +18,9 @@ PlasmoidItem {
     }
 
     readonly property bool recording: backend.recordingCount > 0
+    // grabd runs (or is starting): the tray menu's "Enable Recorder" is checked
+    readonly property bool serviceOn: backend.control.transition === "starting"
+        || (backend.available && backend.control.transition !== "stopping")
 
     // Drawn by the tray like the Media Player's icon (the default compact
     // representation): Breeze-style symbolic icons, a microphone in a ring,
@@ -25,14 +28,46 @@ PlasmoidItem {
     Plasmoid.icon: recording ? "grab-recorder-recording-symbolic" : "grab-recorder-symbolic"
     // Active (not NeedsAttention) while recording: the tray animates needs-attention
     // icons, and the red ring already says we're recording.
+    // Not running (also disabled: it stays in sight, to be enabled again): active.
     Plasmoid.status: !backend.available || recording || backend.count > 0
                    ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
+
+    // Right-click menu: turn grabd on or off (Recorder.setEnabled asks first if
+    // that finishes recordings in progress)
+    Plasmoid.contextualActions: [
+        PlasmaCore.Action {
+            text: "Enable Recorder"
+            icon.name: "media-record"
+            checkable: true
+            checked: root.serviceOn
+            enabled: backend.control.known && !backend.control.busy
+                     && backend.control.unitState !== "missing"
+            onTriggered: {
+                backend.setEnabled(!root.serviceOn);
+                checked = Qt.binding(() => root.serviceOn);   // clicking toggled it; the state decides
+            }
+        }
+    ]
+
+    Connections {
+        target: backend
+        function onAttentionRequested() { root.expanded = true; }
+    }
 
     toolTipMainText: "Record What's Playing"
     // "Recording: 1 of 3 streams" / "No Streams", then "Recordings: 2 ready" / "No Recordings"
     toolTipSubText: {
+        const control = backend.control;
+        if (control.transition === "starting")
+            return "Starting…";
+        if (control.transition === "stopping")
+            return "Stopping…";
+        if (control.error)
+            return control.error;
         if (!backend.available)
-            return "Recorder service not running";
+            return control.known && !control.enabled ? "Disabled"
+                 : control.unitState === "missing" ? "Recorder service not installed"
+                 : "Recorder service not running";
         const n = backend.streams.count;
         const ready = backend.readyCount;
         return [n ? `Recording: ${backend.recordingCount} of ${n} stream${n === 1 ? "" : "s"}` : "No Streams",

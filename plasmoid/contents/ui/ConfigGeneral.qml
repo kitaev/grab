@@ -1,7 +1,8 @@
 // Settings page: grabd's own settings (the recordings folder),
 // read and written over D-Bus (GetSettings/SetSettings), not the widget's
 // configuration. The dialog's Apply/OK call saveConfig(); unsavedChanges
-// enables Apply.
+// enables Apply. Read only while grabd runs: a call would start it, also
+// while it is disabled.
 import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Dialogs
@@ -55,12 +56,19 @@ KCM.SimpleKCM {
              message => { error = message; load(); });
     }
 
-    Component.onCompleted: load()
+    readonly property var watcher: DBus.DBusServiceWatcher {
+        busType: DBus.BusType.Session
+        watchedService: "org.grab.Recorder"
+        onRegisteredChanged: if (registered) page.load()
+    }
+
+    Component.onCompleted: if (page.watcher.registered) load()
 
     header: Kirigami.InlineMessage {
-        visible: page.error !== ""
-        type: Kirigami.MessageType.Error
-        text: page.error
+        visible: !page.watcher.registered || page.error !== ""
+        type: page.watcher.registered ? Kirigami.MessageType.Error : Kirigami.MessageType.Information
+        text: page.watcher.registered ? page.error
+            : "The recorder isn't running. Enable it from the widget's context menu to change its settings."
         position: Kirigami.InlineMessage.Position.Header
     }
 
@@ -76,7 +84,7 @@ KCM.SimpleKCM {
     }
 
     Kirigami.FormLayout {
-        enabled: page.saved !== null
+        enabled: page.saved !== null && page.watcher.registered
 
         RowLayout {
             Kirigami.FormData.label: "Save recordings in:"

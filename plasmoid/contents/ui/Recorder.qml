@@ -8,10 +8,18 @@ QtObject {
     id: rec
 
     property string service: "org.grab.Recorder"
+    property var bus: DBus.SessionBus      // (tests pass a fake)
     readonly property string path: "/org/grab/Recorder"
     readonly property string iface: "org.grab.Recorder1"
 
     readonly property bool available: watcher.registered
+    // grabd.service on/off (systemd); while it is off nothing here calls grabd,
+    // since any call would start it (D-Bus activation)
+    readonly property Service control: Service {
+        registered: watcher.registered
+        bus: rec.bus
+        onChecked: if (enabled && !rec.available) rec.refresh()   // starts grabd, as before
+    }
     readonly property ListModel streams: ListModel {}   // available, recording, paused, encoding
     readonly property ListModel records: ListModel {}   // done, empty, failed
     readonly property int count: streams.count + records.count
@@ -38,6 +46,7 @@ QtObject {
     property int finishedCount: 0
     property int readyCount: 0             // saved recordings (done)
     property int busyCount: 0
+    property int activeCount: 0            // recording, paused or encoding: disabling finishes them
     property var recordingTitles: []
 
     readonly property var finishedStates: ["done", "empty", "failed"]
@@ -52,7 +61,7 @@ QtObject {
     }
 
     function call(member, args, onReply) {
-        DBus.SessionBus.asyncCall({service: rec.service, path: rec.path, iface: rec.iface,
+        rec.bus.asyncCall({service: rec.service, path: rec.path, iface: rec.iface,
                                    member: member, arguments: args || []},
             reply => { if (onReply) onReply(reply); },
             reply => console.warn("grab:", member, "failed:", reply.error.message));
@@ -78,12 +87,35 @@ QtObject {
     // Removing files: to the Trash right away; deleted permanently (Shift held,
     // see ShiftMenu) after confirmRequested (FullView asks) calls proceed.
     signal confirmRequested(string title, string message, string action, var proceed)
+    property var pendingConfirm: null      // the last request, until FullView takes it
+    function confirm(title, message, action, proceed, icon) {
+        pendingConfirm = {title: title, message: message, action: action, proceed: proceed,
+                          icon: icon || "edit-delete"};
+        confirmRequested(title, message, action, proceed);
+    }
+
+    // The tray menu's and the popup's "Enable Recorder": stopping grabd finishes
+    // what is recording, so ask first then (FullView shows the question).
+    signal attentionRequested()           // open the popup (for the question)
+    function setEnabled(on) {
+        if (on) {
+            control.enable();
+        } else if (activeCount > 0) {
+            attentionRequested();
+            confirm("Disable Recorder?",
+                    activeCount === 1 ? "The recording in progress will be finished and saved."
+                                      : `The ${activeCount} recordings in progress will be finished and saved.`,
+                    "Disable", () => control.disable(), "media-playback-stop");
+        } else {
+            control.disable();
+        }
+    }
 
     function discardRecording(id, title, permanently) {
         if (!permanently)
             removeRecord(id);
         else
-            confirmRequested("Delete Recording?",
+            confirm("Delete Recording?",
                              `The recording of “${title}” will be stopped and deleted permanently.`,
                              "Delete", () => call("DeleteRecord", [id]));
     }
@@ -91,7 +123,7 @@ QtObject {
         if (!permanently)
             remove(id, true);
         else
-            confirmRequested("Delete File?", `“${title}” will be deleted permanently.`,
+            confirm("Delete File?", `“${title}” will be deleted permanently.`,
                              "Delete", () => call("Delete", [id]));
     }
     function removeFinishedWithFiles(permanently) {
@@ -104,7 +136,7 @@ QtObject {
         for (let i = 0; i < records.count; i++)
             ids.push(records.get(i).itemId);
         const n = ids.length;
-        confirmRequested("Delete Files?",
+        confirm("Delete Files?",
                          `${n === 1 ? "The recording" : `All ${n} recordings`} in the list will be deleted permanently.`,
                          "Delete All", () => ids.forEach(id => call("Delete", [id])));
     }
@@ -133,7 +165,7 @@ QtObject {
         streams.clear();
         records.clear();
         inputs = [];
-        recordingCount = finishedCount = readyCount = busyCount = 0;
+        recordingCount = finishedCount = readyCount = busyCount = activeCount = 0;
         recordingTitles = [];
     }
 
@@ -144,6 +176,7 @@ QtObject {
         finishedCount = records.count;
         readyCount = list.filter(it => it.itemState === "done").length;
         busyCount = list.filter(it => it.itemState === "encoding" || it.busy).length;
+        activeCount = list.filter(it => ["recording", "paused", "encoding"].indexOf(it.itemState) >= 0).length;
         recordingTitles = list.filter(it => it.itemState === "recording").map(it => it.title);
     }
 
@@ -203,5 +236,5 @@ QtObject {
         }
     }
 
-    Component.onCompleted: refresh()
+    // grabd is called (and so started) once control knows it is enabled: onChecked
 }

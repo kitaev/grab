@@ -14,6 +14,8 @@ PlasmaComponents3.ScrollView {
     property string placeholderIcon: "media-record"
     property string placeholderText: ""
     property string placeholderExplanation: ""
+    property var placeholderAction: null   // a Kirigami.Action for a button, or null
+    property bool placeholderBusy: false   // a spinner instead of the icon
     readonly property real listHeight: list.contentHeight
 
     ListView {
@@ -62,10 +64,37 @@ PlasmaComponents3.ScrollView {
         PlasmaExtras.PlaceholderMessage {
             anchors.centerIn: parent
             width: parent.width - Kirigami.Units.gridUnit * 2
-            visible: list.count === 0
+            visible: list.count === 0 && !scroll.placeholderBusy
             iconName: scroll.placeholderIcon
             text: scroll.placeholderText
             explanation: scroll.placeholderExplanation
+            helpfulAction: scroll.placeholderAction
+        }
+        ColumnLayout {                     // starting/stopping the recorder
+            anchors.centerIn: parent
+            width: parent.width - Kirigami.Units.gridUnit * 2
+            visible: list.count === 0 && scroll.placeholderBusy
+            spacing: Kirigami.Units.largeSpacing
+            PlasmaComponents3.BusyIndicator {
+                Layout.alignment: Qt.AlignHCenter
+                running: parent.visible
+            }
+            Kirigami.Heading {
+                Layout.fillWidth: true
+                level: 3
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: scroll.placeholderText
+                opacity: 0.7
+            }
+            PlasmaComponents3.Label {
+                Layout.fillWidth: true
+                visible: text !== ""
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                text: scroll.placeholderExplanation
+                opacity: 0.7
+            }
         }
     }
 }
