@@ -32,12 +32,30 @@ PlasmoidItem {
     Plasmoid.status: !backend.available || recording || backend.count > 0
                    ? PlasmaCore.Types.ActiveStatus : PlasmaCore.Types.PassiveStatus
 
-    // Right-click menu: turn grabd on or off (Recorder.setEnabled asks first if
-    // that finishes recordings in progress)
+    // Right-click menu: Configure…, then turn grabd on or off (Recorder.setEnabled
+    // asks first if that finishes recordings in progress), last. The system tray
+    // appends Plasma's own "configure" action after a widget's actions, so while
+    // the popup is closed that one is hidden and configureProxy takes its
+    // place. While it is open, Plasma's shows instead: the popup's heading puts
+    // our actions in its ⋮ menu next to its own configure button.
+    readonly property var configureAction: Plasmoid.internalAction("configure")
+    Binding {
+        target: root.configureAction
+        when: root.configureAction !== null
+        property: "visible"
+        value: root.expanded
+        restoreMode: Binding.RestoreBindingOrValue
+    }
     Plasmoid.contextualActions: [
         PlasmaCore.Action {
+            id: configureProxy
+            text: root.configureAction?.text ?? ""
+            icon.name: "configure"
+            visible: root.configureAction !== null && !root.expanded
+            onTriggered: root.configureAction?.trigger()
+        },
+        PlasmaCore.Action {
             text: root.serviceOn ? "Disable Recording Service" : "Enable Recording Service"
-            icon.name: root.serviceOn ? "media-playback-stop" : "media-record"
             enabled: backend.control.known && !backend.control.busy
                      && backend.control.unitState !== "missing"
             onTriggered: backend.setEnabled(!root.serviceOn)
@@ -61,8 +79,8 @@ PlasmoidItem {
             return control.error;
         if (!backend.available)
             return control.known && !control.enabled ? "Disabled"
-                 : control.unitState === "missing" ? "Recorder service not installed"
-                 : "Recorder service not running";
+                 : control.unitState === "missing" ? "Recording service not installed"
+                 : "Recording service not running";
         const n = backend.streams.count;
         const ready = backend.readyCount;
         return [n ? `Recording: ${backend.recordingCount} of ${n} stream${n === 1 ? "" : "s"}` : "No Streams",

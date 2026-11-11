@@ -86,9 +86,9 @@ QtObject {
                         transition = "";
                     else
                         startTimeout.restart();
-                }, message => fail(`Couldn't start the recorder: ${message}`));
+                }, message => fail(`Couldn't start the recording service: ${message}`));
             }, message => fail(`Couldn't reload the user services: ${message}`));
-        }, message => fail(`Couldn't enable the recorder: ${message}`));
+        }, message => fail(`Couldn't enable the recording service: ${message}`));
     }
 
     function disable() {
@@ -104,11 +104,11 @@ QtObject {
                 call("StopUnit", [unit, "replace"], () => {
                     if (!registered)
                         transition = "";
-                }, message => fail(`Couldn't stop the recorder: ${message}`));
+                }, message => fail(`Couldn't stop the recording service: ${message}`));
             }, message => fail(`Couldn't reload the user services: ${message}`));
         }, message => fail(
             // e.g. ~/.config/systemd/user/grabd.service is a real file (an override)
-            `Couldn't disable the recorder: ${message}`));
+            `Couldn't disable the recording service: ${message}`));
     }
 
     onRegisteredChanged: {
@@ -125,7 +125,7 @@ QtObject {
 
     readonly property var startTimeout: Timer {
         interval: svc.startTimeoutMs
-        onTriggered: svc.fail("The recorder didn't start. To see why, run: "
+        onTriggered: svc.fail("The recording service didn't start. To see why, run: "
                               + "journalctl --user -u grabd")
     }
 

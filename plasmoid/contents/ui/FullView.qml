@@ -54,14 +54,14 @@ PlasmaExtras.Representation {
     readonly property var control: recorder.control
     readonly property string offText: {
         switch (control.transition) {
-        case "starting": return "Starting the recorder…";
-        case "stopping": return "Stopping the recorder…";
+        case "starting": return "Starting the recording service…";
+        case "stopping": return "Stopping the recording service…";
         }
         if (!control.known)
             return "";
         if (control.unitState === "missing")
-            return "Recorder service not installed";
-        return control.enabled ? "Recorder service not running" : "Recorder disabled";
+            return "Recording service not installed";
+        return control.enabled ? "Recording service not running" : "Recording service disabled";
     }
     readonly property string offExplanation: {
         if (control.transition === "stopping")
@@ -75,7 +75,7 @@ PlasmaExtras.Representation {
     }
     readonly property Kirigami.Action offAction: Kirigami.Action {
         objectName: "enableAction"
-        text: view.control.enabled ? "Start Recorder" : "Enable Recorder"
+        text: view.control.enabled ? "Start Recording Service" : "Enable Recording Service"
         icon.name: "media-record"
         enabled: !view.control.busy
         visible: view.control.known && !view.control.busy
@@ -248,7 +248,7 @@ PlasmaExtras.Representation {
             Layout.margins: Kirigami.Units.smallSpacing
             visible: view.control.transition === "stopping" && view.recorder.available
             type: Kirigami.MessageType.Information
-            text: "Stopping the recorder: recordings in progress are being finished and saved…"
+            text: "Stopping the recording service: recordings in progress are being finished and saved…"
         }
 
         StackLayout {
@@ -294,6 +294,7 @@ PlasmaExtras.Representation {
                 icon.name: "folder-music"
                 text: "Open Recordings Folder"
                 visible: view.recorder.folder !== ""
+                enabled: view.recorder.available   // grabd's folder: not known while it is off
                 onClicked: Qt.openUrlExternally("file://" + view.recorder.folder.split("/")
                                                 .map(encodeURIComponent).join("/"))
             }

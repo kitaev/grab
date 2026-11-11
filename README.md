@@ -108,7 +108,7 @@ D-Bus, your Music folder and your Trash.
 Right-click the tray icon and choose **Disable Recording Service** to stop
 grabd. If something is recording, you're asked first: the recordings in
 progress are finished and saved. Choose **Enable Recording Service** there,
-or press **Enable Recorder** in the popup, to start grabd again.
+or press **Enable Recording Service** in the popup, to start grabd again.
 
 Disabling also *masks* grabd's user service, as
 `systemctl --user mask --now grabd` does. That is what keeps it off: neither

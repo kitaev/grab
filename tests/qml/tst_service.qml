@@ -108,7 +108,7 @@ Item {
             fakeBus.ok("Reload");
             fakeBus.fail("StartUnit", "Unit grabd.service not found.");
             compare(rec.control.transition, "");
-            compare(rec.control.error, "Couldn't start the recorder: Unit grabd.service not found.");
+            compare(rec.control.error, "Couldn't start the recording service: Unit grabd.service not found.");
         }
 
         function test_disable() {
@@ -136,7 +136,7 @@ Item {
             rec.setEnabled(false);
             fakeBus.fail("MaskUnitFiles", "File exists");
             compare(rec.control.transition, "");
-            compare(rec.control.error, "Couldn't disable the recorder: File exists");
+            compare(rec.control.error, "Couldn't disable the recording service: File exists");
             compare(fakeBus.last("StopUnit"), null, "not stopped");
         }
 
@@ -149,7 +149,7 @@ Item {
             rec.setEnabled(false);
             compare(asked, 1, "opens the popup for the question");
             verify(rec.pendingConfirm !== null);
-            compare(rec.pendingConfirm.title, "Disable Recorder?");
+            compare(rec.pendingConfirm.title, "Disable Recording Service?");
             verify(rec.pendingConfirm.message.indexOf("2 recordings") >= 0);
             compare(fakeBus.last("MaskUnitFiles"), null, "nothing yet");
             rec.pendingConfirm.proceed();

@@ -43,7 +43,7 @@ KCM.SimpleKCM {
 
     function load() {
         call("GetSettings", [], reply => { error = ""; show(JSON.parse(String(plain(reply.value)))); },
-             message => error = "Can't read the recorder's settings: " + message);
+             message => error = "Can't read the recording service's settings: " + message);
     }
 
     function saveConfig() {
@@ -68,7 +68,7 @@ KCM.SimpleKCM {
         visible: !page.watcher.registered || page.error !== ""
         type: page.watcher.registered ? Kirigami.MessageType.Error : Kirigami.MessageType.Information
         text: page.watcher.registered ? page.error
-            : "The recorder isn't running. Enable it from the widget's context menu to change its settings."
+            : "The recording service isn't running. Enable it from the widget's context menu to change its settings."
         position: Kirigami.InlineMessage.Position.Header
     }
 
