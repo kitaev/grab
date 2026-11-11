@@ -18,7 +18,7 @@ PlasmoidItem {
     }
 
     readonly property bool recording: backend.recordingCount > 0
-    // grabd runs (or is starting): the tray menu's "Enable Recorder" is checked
+    // grabd runs (or is starting): the tray menu offers to disable it
     readonly property bool serviceOn: backend.control.transition === "starting"
         || (backend.available && backend.control.transition !== "stopping")
 
@@ -36,16 +36,11 @@ PlasmoidItem {
     // that finishes recordings in progress)
     Plasmoid.contextualActions: [
         PlasmaCore.Action {
-            text: "Enable Recorder"
-            icon.name: "media-record"
-            checkable: true
-            checked: root.serviceOn
+            text: root.serviceOn ? "Disable Recording Service" : "Enable Recording Service"
+            icon.name: root.serviceOn ? "media-playback-stop" : "media-record"
             enabled: backend.control.known && !backend.control.busy
                      && backend.control.unitState !== "missing"
-            onTriggered: {
-                backend.setEnabled(!root.serviceOn);
-                checked = Qt.binding(() => root.serviceOn);   // clicking toggled it; the state decides
-            }
+            onTriggered: backend.setEnabled(!root.serviceOn)
         }
     ]
 

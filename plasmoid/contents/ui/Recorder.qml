@@ -94,7 +94,8 @@ QtObject {
         confirmRequested(title, message, action, proceed);
     }
 
-    // The tray menu's and the popup's "Enable Recorder": stopping grabd finishes
+    // The tray menu's "Enable/Disable Recording Service" and the popup's "Enable
+    // Recorder": stopping grabd finishes
     // what is recording, so ask first then (FullView shows the question).
     signal attentionRequested()           // open the popup (for the question)
     function setEnabled(on) {
